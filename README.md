@@ -74,6 +74,8 @@ git push -u origin main
 6. 記下網址，例如：`https://jp-concert-tracker.onrender.com`
 7. 開啟網址確認首頁能正常顯示
 
+> **免費方案說明：** Render 免費版不支援 Persistent Disk，資料庫存在容器內（重啟/重新部署會清空）。演唱會資料由 **GitHub Actions 每次掃描後上傳** 到 Render，所以部署完成後務必執行步驟 5 觸發第一次掃描。
+
 > Render 免費方案會在 15 分鐘無人訪問後休眠，第一次開啟需等約 30 秒喚醒，demo 時先開一次預熱即可。
 
 ---
@@ -160,7 +162,7 @@ python monitor.py      # 手動掃描（預設 Nitter）
 檢查 Secrets 是否正確，尤其是 `RENDER_URL` 不要有多餘斜線。
 
 **Q: 掃描結果沒更新到網頁？**  
-確認 upload 步驟成功，Render 的 `DB_PATH=/var/data/concerts.db` 有掛載磁碟。
+確認 GitHub Actions 的 upload 步驟成功。免費版無 Persistent Disk，若剛重新部署 Render，需再跑一次 Actions 掃描上傳資料庫。
 
 **Q: Nitter 全部失敗？**  
 Nitter 實例常不穩定，可改用 `python monitor.py --prefer google` 測試，或等下次排程重試。

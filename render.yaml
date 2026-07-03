@@ -1,4 +1,5 @@
-# Render Blueprint — 在 Render Dashboard 選「New > Blueprint」匯入此檔
+# Render Blueprint — 免費方案（不支援 Persistent Disk）
+# 資料庫由 GitHub Actions 掃描後透過 /api/sync-db 上傳同步
 services:
   - type: web
     name: jp-concert-tracker
@@ -11,14 +12,10 @@ services:
       - key: PYTHON_VERSION
         value: "3.11"
       - key: DB_PATH
-        value: /var/data/concerts.db
+        value: concerts.db
       - key: ENABLE_PUBLIC_SCAN
         value: "false"
       - key: SCAN_API_KEY
         sync: false
       - key: GROQ_API_KEY
         sync: false
-    disk:
-      name: concerts-data
-      mountPath: /var/data
-      sizeGB: 1

@@ -799,7 +799,13 @@ def fetch_tweets(twitter_handle: str, limit: int = 20, prefer: str = "nitter", a
         if tweets:
             has_tw_content = any(passes_keyword_filter(t.get("text", "")) for t in tweets)
             if not has_tw_content:
-                log.info(f"Nitter 無台灣相關推文，僅使用官方推文（不進行 DDG 補搜）: @{twitter_handle}")
+                log.info(f"Nitter 無台灣相關推文，啟動 DDG 售票平台補搜: @{twitter_handle}")
+                ddg_hints = _fetch_ddg_ticket_hints(artist_name or twitter_handle, artist_en)
+                existing_urls = {t["url"] for t in tweets}
+                for h in ddg_hints:
+                    if h["url"] not in existing_urls:
+                        tweets.append(h)
+                        existing_urls.add(h["url"])
             return tweets
         log.info("Nitter 無結果，改用 Google Search...")
 
@@ -866,6 +872,63 @@ def _is_past_concert_date(date_str: str | None) -> bool:
         return _dt.date.fromisoformat(date_str) < _dt.date.today()
     except ValueError:
         return True
+
+
+def _fetch_ddg_ticket_hints(artist_name: str, artist_en: str = "") -> list[dict]:
+    """DDG 補搜：只接受售票平台連結，並經 TicketFilter 評分。"""
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
+
+    import datetime as _dt
+    _yr = _dt.date.today().year
+    ticket_filter = TicketFilter(target_years=[str(_yr), str(_yr + 1)], artist_name=artist_name)
+    queries = [
+        f"{artist_name} 台灣演唱會 kktix OR ticketplus {_yr}",
+        f"{artist_en or artist_name} Taiwan concert Taipei kktix {_yr}",
+        f"{artist_name} 台灣演唱會 tixcraft OR indievox {_yr}",
+    ]
+    hints: list[dict] = []
+    seen: set[str] = set()
+
+    for sq in queries:
+        try:
+            log.info(f"[DDG] 售票平台補搜: {sq}")
+            with DDGS() as ddgs:
+                results = list(ddgs.text(sq, max_results=8))
+            for sr in results:
+                url = sr.get("href", "")
+                title = sr.get("title", "")
+                body = sr.get("body", "")
+                text = f"{title} {body}"
+                if not url or url in seen:
+                    continue
+                if _is_untrusted_source(url):
+                    continue
+                if not any(d in url for d in TICKET_DOMAINS):
+                    continue
+                if not _artist_name_in_text(text, artist_name, artist_en):
+                    continue
+                if not ticket_filter.evaluate_link(url, title, body, sq):
+                    log.info(f"[DDG] 評分不足，跳過: {url}")
+                    continue
+                seen.add(url)
+                hints.append({
+                    "id": f"ddg_{url}",
+                    "text": text,
+                    "url": url,
+                    "created_at": "",
+                    "has_media": False,
+                    "source": "ddg_supplement",
+                    "ticket_url": url,
+                })
+            time.sleep(1)
+        except Exception as e:
+            log.warning(f"[DDG] 補搜失敗: {e}")
+
+    log.info(f"[DDG] {artist_name}: 找到 {len(hints)} 筆售票平台結果")
+    return hints
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1067,22 +1130,27 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
         if text.strip().startswith("RT "):
             continue
 
-        if _is_untrusted_source(tw_url):
-            log.info(f"[{name}] ⏭️  不可靠來源，跳過: {tw_url}")
-            continue
+        is_ddg = tw.get("source") == "ddg_supplement"
 
-        # 只處理歌手官方帳號的推文（handle 比對）
-        is_official_tweet = bool(handle and tw_url and handle.lower() in tw_url.lower())
-        if not is_official_tweet:
-            log.info(f"[{name}] ⏭️  非官方帳號推文，跳過: {tw_url}")
-            continue
+        if not is_ddg:
+            if _is_untrusted_source(tw_url):
+                log.info(f"[{name}] ⏭️  不可靠來源，跳過: {tw_url}")
+                continue
 
-        if not passes_keyword_filter(text):
-            continue
+            is_official_tweet = bool(handle and tw_url and handle.lower() in tw_url.lower())
+            if not is_official_tweet:
+                log.info(f"[{name}] ⏭️  非官方帳號推文，跳過: {tw_url}")
+                continue
 
-        if not _artist_name_in_text(text, name, artist.get("name_en", "")):
-            log.info(f"[{name}] ⏭️  推文未明確提及歌手名稱，跳過: {tw_url}")
-            continue
+            if not passes_keyword_filter(text):
+                continue
+            # 官方推文（常為日文）不要求羅馬字歌手名出現在內文
+        else:
+            if not passes_keyword_filter(text):
+                continue
+            if not _artist_name_in_text(text, name, artist.get("name_en", "")):
+                log.info(f"[{name}] ⏭️  DDG 結果未明確提及歌手，跳過: {tw_url}")
+                continue
 
         log.info(f"[{name}] 🔍 關鍵字命中！{tw_url}")
 
@@ -1122,7 +1190,7 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
 
         log.info(f"[{name}] 🤖 AI結果: is_concert={result.get('is_concert')} date={result.get('date')} dates={result.get('dates')} ticket_url={result.get('ticket_url')!r}")
 
-        if result.get("is_concert") is True:
+        if result.get("is_concert") in (True, "maybe"):
             # 支援多日期：dates 陣列優先，否則用單一 date
             dates = result.get("dates") or []
             if not dates and result.get("date"):
@@ -1274,6 +1342,11 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                     log.info(f"[{name}] ⏭️  跳過：日期未定且無售票連結，資訊不足")
                     continue
 
+                # maybe 等級需有售票連結或明確日期才寫入
+                if result.get("is_concert") == "maybe" and not concert_url and not concert_date:
+                    log.info(f"[{name}] ⏭️  跳過：AI 信心不足且無售票/日期")
+                    continue
+
                 # 日期合理性驗證：售票連結有效時，確認日期是台北場次（非其他城市）
                 # 無售票連結時（新聞找到的日期），直接信任 AI 已過濾的結果
                 if concert_date and final_ticket_url:
@@ -1310,6 +1383,48 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                 upsert_concert(**concert)
                 found.append(concert)
                 log.info(f"[{name}] ✅ 發現演唱會！{concert_date} @ {concert_venue}  售票:{concert_url}")
+
+    # Nitter + DDG 推文都無結果時，最後嘗試 DDG 售票平台直搜
+    if not found:
+        log.info(f"[{name}] 🔎 嘗試 DDG 售票平台直搜 fallback...")
+        ticket_info = search_ticket_url(
+            artist_name=name,
+            artist_en=artist.get("name_en", ""),
+        )
+        ticket_url = ticket_info.get("ticket_url")
+        if ticket_url and any(d in ticket_url for d in TICKET_DOMAINS):
+            sessions = ticket_info.get("sessions") or []
+            if not sessions:
+                sessions = [{
+                    "date": ticket_info.get("found_date"),
+                    "venue": ticket_info.get("venue"),
+                    "url": ticket_url,
+                }]
+            for session in sessions:
+                _cd = session.get("date")
+                _cu = session.get("url") or ticket_url
+                _cv = session.get("venue") or ticket_info.get("venue") or "未定"
+                if _is_past_concert_date(_cd):
+                    continue
+                if not _cd and not _cu:
+                    continue
+                concert = dict(
+                    artist_id=art_id,
+                    event_name=ticket_info.get("event_name") or f"{name} 台灣公演",
+                    venue=_cv,
+                    concert_date=_cd,
+                    ticket_url=_cu,
+                    ticket_status="on_sale",
+                    is_confirmed=1,
+                    ai_confidence=0.85,
+                    source_url=_cu,
+                    source_text="DDG 售票平台搜尋",
+                    source_platform="DDG Search",
+                    notes="售票平台直搜",
+                )
+                upsert_concert(**concert)
+                found.append(concert)
+                log.info(f"[{name}] ✅ DDG 直搜寫入！{_cd} @ {_cv}  {_cu}")
 
     return found
 

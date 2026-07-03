@@ -316,20 +316,29 @@ def _migrate_db():
 
 
 def cleanup_old_concerts():
-    """刪除已過演出日期的記錄，並清除 DDG 補搜誤抓的資料。"""
+    """刪除過期、低品質與 DDG 誤抓的演唱會記錄。"""
     import datetime
     today = datetime.date.today().isoformat()
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM concerts WHERE concert_date IS NOT NULL AND concert_date < ?", (today,))
     past_deleted = cur.rowcount
-    cur.execute("DELETE FROM concerts WHERE source_platform = 'DDG Search' OR source_url = 'ddg_supplement'")
+    cur.execute("DELETE FROM concerts WHERE source_url = 'ddg_supplement'")
     ddg_deleted = cur.rowcount
+    cur.execute("""
+        DELETE FROM concerts WHERE
+            (ticket_status = 'rumor' AND (ticket_url IS NULL OR ticket_url = ''))
+            OR (concert_date IS NULL AND (ticket_url IS NULL OR ticket_url = '') AND is_confirmed = 0)
+            OR event_name LIKE '%疑似%'
+            OR notes LIKE '%AI 分析失敗%'
+            OR notes LIKE '%關鍵字命中%'
+    """)
+    rumor_deleted = cur.rowcount
     conn.commit()
     conn.close()
-    total = past_deleted + ddg_deleted
+    total = past_deleted + ddg_deleted + rumor_deleted
     if total:
-        print(f"[DB] 清除 {past_deleted} 筆過期演唱會、{ddg_deleted} 筆 DDG 誤抓記錄")
+        print(f"[DB] 清除 {past_deleted} 筆過期、{ddg_deleted} 筆 DDG 誤抓、{rumor_deleted} 筆低品質記錄")
 
 
 def get_all_artists():
@@ -350,7 +359,10 @@ def get_concerts_by_artists(artist_ids: list):
         FROM concerts c
         JOIN artists a ON a.id = c.artist_id
         WHERE c.artist_id IN ({placeholders})
-          AND (c.concert_date IS NULL OR c.concert_date >= date('now'))
+          AND (
+            (c.concert_date IS NOT NULL AND c.concert_date >= date('now'))
+            OR (c.ticket_url IS NOT NULL AND c.ticket_url != '')
+          )
         ORDER BY c.concert_date ASC
     """, artist_ids)
     concerts = [dict(r) for r in cur.fetchall()]
@@ -368,6 +380,10 @@ def get_artists_with_concert_status():
                MAX(c.updated_at) as last_updated
         FROM artists a
         LEFT JOIN concerts c ON c.artist_id = a.id
+            AND (
+                (c.concert_date IS NOT NULL AND c.concert_date >= date('now'))
+                OR (c.ticket_url IS NOT NULL AND c.ticket_url != '')
+            )
         GROUP BY a.id
         ORDER BY a.name
     """)

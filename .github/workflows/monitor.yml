@@ -2,9 +2,8 @@ name: Concert Monitor Scan
 
 on:
   schedule:
-    # 每 2 小時（UTC）；台灣時間 = UTC+8
     - cron: "0 */2 * * *"
-  workflow_dispatch:  # 手動觸發，demo 時很有用
+  workflow_dispatch:
 
 jobs:
   scan:
@@ -18,10 +17,17 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Verify secrets
+        run: |
+          if [ -z "${{ secrets.RENDER_URL }}" ]; then echo "❌ RENDER_URL secret 未設定"; exit 1; fi
+          if [ -z "${{ secrets.SCAN_API_KEY }}" ]; then echo "❌ SCAN_API_KEY secret 未設定"; exit 1; fi
+          if [ -z "${{ secrets.GROQ_API_KEY }}" ]; then echo "❌ GROQ_API_KEY secret 未設定"; exit 1; fi
+          echo "✓ Secrets 已設定"
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Download database from Render
+      - name: Wake Render & download database
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
           SCAN_API_KEY: ${{ secrets.SCAN_API_KEY }}
@@ -42,7 +48,14 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python monitor.py --prefer nitter
 
-      - name: Upload database to Render
+      - name: Backup database (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: concerts-db-${{ github.run_id }}
+          path: concerts.db
+          retention-days: 7
+
+      - name: Wake Render & upload database
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
           SCAN_API_KEY: ${{ secrets.SCAN_API_KEY }}

@@ -27,7 +27,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-SCAN_API_KEY = os.getenv("SCAN_API_KEY", "")
+SCAN_API_KEY = os.getenv("SCAN_API_KEY", "").strip()
 ENABLE_PUBLIC_SCAN = os.getenv("ENABLE_PUBLIC_SCAN", "false").lower() == "true"
 
 HTML_PATH = Path(__file__).parent / "templates" / "index.html"
@@ -36,7 +36,7 @@ HTML_PATH = Path(__file__).parent / "templates" / "index.html"
 def _check_api_key() -> bool:
     if not SCAN_API_KEY:
         return True
-    key = request.headers.get("X-API-Key") or request.args.get("api_key")
+    key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
     return key == SCAN_API_KEY
 
 

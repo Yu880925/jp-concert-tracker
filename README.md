@@ -87,7 +87,7 @@ git push -u origin main
 | Secret 名稱 | 值 |
 |-------------|-----|
 | `RENDER_URL` | `https://jp-concert-tracker.onrender.com`（你的 Render 網址，**不要**結尾斜線） |
-| `SCAN_API_KEY` | 與 Render 相同的金鑰 |
+| `SCAN_API_KEY` | 與 Render 相同的金鑰（**貼上時不要換行**） |
 | `GROQ_API_KEY` | 你的 Groq API Key |
 
 ---

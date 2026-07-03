@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>台灣日系演唱會雷達 🎵</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@300;400;600;900&family=Space+Mono:wght@400;700&family=Shippori+Mincho:wght@400;600;800&display=swap" rel="stylesheet" />
+<style>
+/* ─── CSS Variables ─────────────────────────────────── */
+:root {
+  --bg:         #0a0a0f;
+  --bg2:        #111118;
+  --bg3:        #1a1a26;
+  --panel:      #13131e;
+  --border:     #2a2a3d;
+  --border2:    #3d3d5c;
+  --text:       #e8e8f0;
+  --text2:      #9090b0;
+  --text3:      #5a5a7a;
+  --accent:     #ff3860;
+  --accent2:    #ff6b88;
+  --gold:       #ffd700;
+  --teal:       #00d4aa;
+  --purple:     #8b5cf6;
+  --blue:       #3b82f6;
+  --glow:       0 0 20px rgba(255, 56, 96, 0.3);
+  --glow2:      0 0 40px rgba(255, 56, 96, 0.15);
+}
+
+/* ─── Reset ────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Noto Serif TC', serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ─── Background noise texture ─────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Scan line overlay ────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.04) 2px,
+    rgba(0,0,0,0.04) 4px
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Hero Header ──────────────────────────────────── */
+.hero {
+  position: relative;
+  text-align: center;
+  padding: 64px 24px 48px;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(255,56,96,0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 40% at 80% 80%, rgba(139,92,246,0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 30% at 20% 70%, rgba(0,212,170,0.06) 0%, transparent 60%);
+  z-index: -1;
+}
+
+.hero-kana {
+  font-size: 11px;
+  letter-spacing: 8px;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-bottom: 16px;
+  font-family: 'Space Mono', monospace;
+  opacity: 0.8;
+}
+
+.hero-title {
+  font-family: 'Shippori Mincho', serif;
+  font-size: clamp(36px, 6vw, 72px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -1px;
+  background: linear-gradient(135deg, #ffffff 0%, #e8e8f0 40%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 8px;
+}
+
+.hero-sub {
+  font-size: 14px;
+  color: var(--text2);
+  letter-spacing: 2px;
+  font-family: 'Space Mono', monospace;
+}
+
+/* Animated decorative bars */
+.deco-bar {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin: 28px auto 0;
+}
+.deco-bar span {
+  display: block;
+  height: 2px;
+  border-radius: 2px;
+  animation: barPulse 2s ease-in-out infinite;
+}
+.deco-bar span:nth-child(1) { width: 60px; background: var(--accent); animation-delay: 0s; }
+.deco-bar span:nth-child(2) { width: 8px;  background: var(--gold);   animation-delay: 0.2s; }
+.deco-bar span:nth-child(3) { width: 24px; background: var(--teal);   animation-delay: 0.4s; }
+.deco-bar span:nth-child(4) { width: 8px;  background: var(--gold);   animation-delay: 0.6s; }
+.deco-bar span:nth-child(5) { width: 60px; background: var(--accent); animation-delay: 0.8s; }
+
+@keyframes barPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Stats Bar ────────────────────────────────────── */
+.stats-bar {
+  display: flex;
+  justify-content: center;
+  gap: 0;
+  margin: 0 auto 48px;
+  max-width: 700px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+.stat-item {
+  flex: 1;
+  padding: 20px 16px;
+  text-align: center;
+  border-right: 1px solid var(--border);
+  transition: background 0.2s;
+}
+.stat-item:last-child { border-right: none; }
+.stat-item:hover { background: var(--bg3); }
+.stat-num {
+  font-family: 'Space Mono', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.stat-num.green { color: var(--teal); }
+.stat-num.red   { color: var(--accent); }
+.stat-num.purple{ color: var(--purple); }
+.stat-num.gold  { color: var(--gold); }
+.stat-label {
+  font-size: 11px;
+  color: var(--text3);
+  letter-spacing: 1px;
+}
+
+/* ─── Main Layout ──────────────────────────────────── */
+.main-wrap {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 0 24px 80px;
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 900px) {
+  .main-wrap { grid-template-columns: 1fr; }
+}
+
+/* ─── Sidebar (Artist List) ────────────────────────── */
+.sidebar {
+  position: sticky;
+  top: 24px;
+  height: fit-content;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border2) transparent;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.sidebar-title {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.select-all-btn {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  color: var(--text3);
+  background: none;
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.select-all-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.artist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.artist-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.artist-chip::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  transform: scaleY(0);
+  transition: transform 0.2s;
+  transform-origin: bottom;
+}
+
+.artist-chip:hover {
+  border-color: var(--border2);
+  background: var(--bg3);
+  transform: translateX(2px);
+}
+
+.artist-chip.selected {
+  border-color: var(--accent);
+  background: rgba(255, 56, 96, 0.08);
+}
+.artist-chip.selected::before { transform: scaleY(1); }
+
+.artist-check {
+  width: 18px; height: 18px;
+  border: 2px solid var(--border2);
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  font-size: 11px;
+}
+.artist-chip.selected .artist-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.artist-info { flex: 1; min-width: 0; }
+.artist-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+.artist-genre {
+  font-size: 11px;
+  color: var(--text3);
+  font-family: 'Space Mono', monospace;
+}
+
+.concert-badge {
+  font-size: 10px;
+  font-family: 'Space Mono', monospace;
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: rgba(0,212,170,0.15);
+  color: var(--teal);
+  border: 1px solid rgba(0,212,170,0.3);
+  white-space: nowrap;
+}
+.concert-badge.zero {
+  background: rgba(90,90,122,0.15);
+  color: var(--text3);
+  border-color: transparent;
+}
+
+/* ─── Main Content Area ────────────────────────────── */
+.content-area {
+  min-width: 0;
+}
+
+.content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.content-title {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: var(--text2);
+  text-transform: uppercase;
+}
+
+.scan-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--accent);
+  background: rgba(255,56,96,0.08);
+  border: 1px solid rgba(255,56,96,0.3);
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.scan-btn:hover {
+  background: rgba(255,56,96,0.16);
+  box-shadow: var(--glow);
+}
+.scan-btn.scanning { opacity: 0.7; cursor: wait; }
+
+.scan-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dotPulse 1.5s ease-in-out infinite;
+}
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.6); }
+}
+
+/* ─── Empty / Loading States ───────────────────────── */
+.state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 24px;
+  text-align: center;
+  color: var(--text3);
+}
+
+.state-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  filter: grayscale(0.5);
+}
+
+.state-title {
+  font-size: 18px;
+  font-family: 'Shippori Mincho', serif;
+  color: var(--text2);
+  margin-bottom: 8px;
+}
+
+.state-sub {
+  font-size: 13px;
+  font-family: 'Space Mono', monospace;
+  line-height: 1.8;
+}
+
+/* Loading spinner */
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Concert Cards ────────────────────────────────── */
+.concerts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.concert-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  transition: all 0.3s;
+  animation: cardIn 0.4s ease backwards;
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.concert-card:hover {
+  border-color: var(--border2);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.concert-card.confirmed {
+  border-left: 3px solid var(--accent);
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+
+.card-artist {
+  font-size: 11px;
+  font-family: 'Space Mono', monospace;
+  color: var(--accent2);
+  letter-spacing: 2px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.card-event-name {
+  font-size: 17px;
+  font-weight: 600;
+  font-family: 'Shippori Mincho', serif;
+  line-height: 1.4;
+}
+
+.card-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.badge {
+  font-size: 11px;
+  font-family: 'Space Mono', monospace;
+  padding: 4px 12px;
+  border-radius: 99px;
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+}
+
+.status-on-sale   { background: rgba(0,212,170,0.15); color: var(--teal);   border: 1px solid rgba(0,212,170,0.4); }
+.status-pre-sale  { background: rgba(59,130,246,0.15); color: var(--blue);   border: 1px solid rgba(59,130,246,0.4); }
+.status-announced { background: rgba(255,215,0,0.12);  color: var(--gold);   border: 1px solid rgba(255,215,0,0.4); }
+.status-rumor     { background: rgba(139,92,246,0.12); color: var(--purple); border: 1px solid rgba(139,92,246,0.4); }
+.status-unknown   { background: rgba(90,90,122,0.15); color: var(--text3);  border: 1px solid var(--border); }
+
+.confirm-badge {
+  font-size: 10px;
+  font-family: 'Space Mono', monospace;
+  color: var(--text3);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.confirm-badge.yes { color: var(--teal); border-color: rgba(0,212,170,0.3); }
+
+.card-body {
+  padding: 16px 24px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 600px) {
+  .card-body { grid-template-columns: 1fr; }
+}
+
+.card-field { }
+.field-label {
+  font-size: 10px;
+  font-family: 'Space Mono', monospace;
+  color: var(--text3);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.field-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.field-value.date {
+  font-family: 'Space Mono', monospace;
+  font-size: 20px;
+  color: var(--gold);
+}
+.field-value.weekday {
+  font-size: 12px;
+  color: var(--text2);
+  font-weight: 400;
+  margin-top: 2px;
+}
+.field-value.no-info {
+  color: var(--text3);
+  font-style: italic;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.card-footer {
+  padding: 12px 24px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  /* 💡 核心修改：將子元素（按鈕）推向容器的最後端（右側） */
+  justify-content: flex-end; 
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.card-notes {
+  font-size: 12px;
+  color: var(--text2);
+  flex: 1;
+  min-width: 0;
+}
+
+.ticket-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-decoration: none;
+  transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0; 
+}
+
+.ticket-btn.available {
+  background: var(--accent);
+  color: white;
+  box-shadow: var(--glow);
+}
+.ticket-btn.available:hover {
+  background: var(--accent2);
+  transform: translateY(-1px);
+  box-shadow: 0 0 32px rgba(255,56,96,0.5);
+}
+
+.ticket-btn.unavailable {
+  background: var(--bg3);
+  color: var(--text3);
+  border: 1px solid var(--border);
+  cursor: default;
+}
+
+/* AI confidence bar */
+.confidence-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.confidence-label {
+  font-size: 9px;
+  font-family: 'Space Mono', monospace;
+  color: var(--text3);
+  white-space: nowrap;
+}
+.confidence-bar-bg {
+  flex: 1;
+  height: 3px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.confidence-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--purple), var(--accent));
+  transition: width 0.8s ease;
+}
+
+/* ─── No selection state ───────────────────────────── */
+.no-selection {
+  padding: 80px 24px;
+  text-align: center;
+}
+
+/* ─── Notification toast ───────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 32px;
+  right: 32px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  padding: 16px 20px;
+  font-size: 13px;
+  font-family: 'Space Mono', monospace;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 1000;
+  transform: translateY(100px);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  max-width: 320px;
+}
+.toast.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+.toast.success { border-left: 3px solid var(--teal); }
+.toast.info    { border-left: 3px solid var(--blue); }
+
+/* ─── Footer ───────────────────────────────────────── */
+footer {
+  text-align: center;
+  padding: 40px 24px;
+  border-top: 1px solid var(--border);
+  color: var(--text3);
+  font-size: 12px;
+  font-family: 'Space Mono', monospace;
+  position: relative;
+  z-index: 1;
+}
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+
+/* ─── Scrollbar ────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<header class="hero">
+  <div class="hero-bg"></div>
+  <p class="hero-kana">J-POP / J-ROCK · TAIWAN CONCERT RADAR</p>
+  <h1 class="hero-title">台灣日系演唱會雷達</h1>
+  <p class="hero-sub">AI-Powered · Real-Time Monitoring · 2025</p>
+  <div class="deco-bar">
+    <span></span><span></span><span></span><span></span><span></span>
+  </div>
+</header>
+
+<!-- Stats Bar -->
+<div style="padding: 0 24px; position:relative; z-index:1;">
+  <div class="stats-bar" id="statsBar">
+    <div class="stat-item">
+      <div class="stat-num green" id="statOnSale">—</div>
+      <div class="stat-label">售票中</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-num gold" id="statAnnounced">—</div>
+      <div class="stat-label">有消息</div>
+    </div>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main-wrap">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">選擇歌手</span>
+      <button class="select-all-btn" onclick="toggleAll()">全選 / 取消</button>
+    </div>
+    <div class="artist-list" id="artistList">
+      <div class="state-container">
+        <div class="spinner"></div>
+        <div class="state-sub">載入中...</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Content -->
+  <main class="content-area">
+    <div class="content-header">
+      <span class="content-title" id="resultsLabel">請選擇歌手</span>
+      <button class="scan-btn" id="scanBtn" onclick="triggerScan()">
+        <span class="scan-dot"></span>
+        立即掃描
+      </button>
+    </div>
+    <div id="concertArea">
+      <div class="state-container">
+        <div class="state-icon">👈</div>
+        <div class="state-title">選擇左側歌手開始查詢</div>
+        <div class="state-sub">可複選多位歌手<br/>系統將顯示所有台灣演出資訊</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Footer -->
+<footer>
+  <p>台灣日系演唱會雷達 · 資料來源：X (Twitter)、Instagram、官方網站</p>
+  <p style="margin-top:8px;">AI 分析由 GPT-4o-mini 驅動 · 監控引擎由 RSSHub + n8n 架構</p>
+  <p style="margin-top:8px; color: var(--border2);">資料僅供參考，請以官方公告為準</p>
+</footer>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ─── State ─────────────────────────────────────────── */
+let selectedArtists = new Set();
+let allArtists = [];
+
+/* ─── Init ──────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadConfig();
+  await loadArtists();
+  loadStats();
+});
+
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    if (!cfg.enable_scan_button) {
+      const btn = document.getElementById('scanBtn');
+      if (btn) btn.style.display = 'none';
+    }
+  } catch (e) {
+    console.warn('Config load failed', e);
+  }
+}
+
+/* ─── Load Artists ──────────────────────────────────── */
+async function loadArtists() {
+  try {
+    const res = await fetch('/api/artists');
+    allArtists = await res.json();
+    renderArtistList(allArtists);
+  } catch (e) {
+    document.getElementById('artistList').innerHTML = `
+      <div class="state-container">
+        <div class="state-icon">⚠️</div>
+        <div class="state-sub">無法連接伺服器<br/>${e.message}</div>
+      </div>`;
+  }
+}
+
+/* ─── Render Artist List ────────────────────────────── */
+function renderArtistList(artists) {
+  const list = document.getElementById('artistList');
+  const sorted = [...artists].sort((a, b) => (b.concert_count > 0 ? 1 : 0) - (a.concert_count > 0 ? 1 : 0));
+  list.innerHTML = sorted.map(a => `
+    <div class="artist-chip ${selectedArtists.has(a.id) ? 'selected' : ''}"
+         onclick="toggleArtist(${a.id})" id="chip-${a.id}">
+      <div class="artist-check">${selectedArtists.has(a.id) ? '✓' : ''}</div>
+      <div class="artist-info">
+        <div class="artist-name">${a.name}</div>
+        <div class="artist-genre">${(a.genre || '').split('/')[0].trim()}</div>
+      </div>
+      <div class="concert-badge ${a.concert_count === 0 ? 'zero' : ''}">
+        ${a.concert_count > 0 ? a.concert_count + ' 場' : '未有'}
+      </div>
+    </div>
+  `).join('');
+}
+
+/* ─── Toggle Artist ─────────────────────────────────── */
+function toggleArtist(id) {
+  if (selectedArtists.has(id)) {
+    selectedArtists.delete(id);
+  } else {
+    selectedArtists.add(id);
+  }
+  // Update chip UI
+  const chip = document.getElementById(`chip-${id}`);
+  if (chip) {
+    chip.classList.toggle('selected', selectedArtists.has(id));
+    chip.querySelector('.artist-check').textContent = selectedArtists.has(id) ? '✓' : '';
+  }
+  loadConcerts();
+}
+
+/* ─── Toggle All ────────────────────────────────────── */
+function toggleAll() {
+  if (selectedArtists.size === allArtists.length) {
+    selectedArtists.clear();
+  } else {
+    allArtists.forEach(a => selectedArtists.add(a.id));
+  }
+  renderArtistList(allArtists);
+  loadConcerts();
+}
+
+/* ─── Load Concerts ─────────────────────────────────── */
+async function loadConcerts() {
+  const area = document.getElementById('concertArea');
+  const label = document.getElementById('resultsLabel');
+
+  if (selectedArtists.size === 0) {
+    label.textContent = '請選擇歌手';
+    area.innerHTML = `
+      <div class="state-container">
+        <div class="state-icon">👈</div>
+        <div class="state-title">選擇左側歌手開始查詢</div>
+        <div class="state-sub">可複選多位歌手<br/>系統將顯示所有台灣演出資訊</div>
+      </div>`;
+    return;
+  }
+
+  area.innerHTML = `<div class="state-container"><div class="spinner"></div><div class="state-sub">搜尋中...</div></div>`;
+
+  try {
+    const ids = Array.from(selectedArtists).join(',');
+    const res = await fetch(`/api/concerts?ids=${ids}`);
+    const concerts = await res.json();
+
+    label.textContent = `找到 ${concerts.length} 筆台灣演出資訊`;
+    renderConcerts(concerts);
+  } catch (e) {
+    area.innerHTML = `<div class="state-container"><div class="state-icon">⚠️</div><div class="state-sub">載入失敗<br/>${e.message}</div></div>`;
+  }
+}
+
+/* ─── Render Concerts ───────────────────────────────── */
+function renderConcerts(concerts) {
+  const area = document.getElementById('concertArea');
+
+  if (concerts.length === 0) {
+    area.innerHTML = `
+      <div class="state-container">
+        <div class="state-icon">🔍</div>
+        <div class="state-title">目前尚無台灣演出資訊</div>
+        <div class="state-sub">所選歌手暫無台灣演出記錄<br/>系統會持續監控中，有消息將立即更新</div>
+      </div>`;
+    return;
+  }
+
+  area.innerHTML = `<div class="concerts-grid">${concerts.map((c, i) => renderCard(c, i)).join('')}</div>`;
+}
+
+function renderCard(c, idx) {
+  const hasTicket = c.ticket_url && c.ticket_url !== 'null';
+  const confidencePct = Math.round((c.ai_confidence || 0) * 100);
+  const delay = idx * 0.07;
+
+  return `
+  <div class="concert-card ${c.is_confirmed ? 'confirmed' : ''}" style="animation-delay:${delay}s">
+    <div class="card-header">
+      <div>
+        <div class="card-artist">${escHtml(c.artist_name || '')}</div>
+        <div class="card-event-name">${escHtml(c.event_name || '台灣公演')}</div>
+      </div>
+      <div class="card-badges">
+        <span class="badge ${c.status_class}">${c.status_label}</span>
+        <span class="confirm-badge ${c.is_confirmed ? 'yes' : ''}">
+          ${c.is_confirmed_label}
+        </span>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <div class="card-field">
+        <div class="field-label">演出日期</div>
+        ${c.concert_date ? `
+          <div class="field-value date">${c.date_display}</div>
+          <div class="field-value weekday">${c.date_weekday}</div>
+        ` : `<div class="field-value no-info">日期未定</div>`}
+      </div>
+      <div class="card-field">
+        <div class="field-label">場地</div>
+        <div class="field-value">${escHtml(c.venue || '未定')}</div>
+        <div class="field-value" style="font-size:12px;color:var(--text2);font-weight:400;">${escHtml(c.city || '台北')}</div>
+      </div>
+      <div class="card-field">
+        <div class="field-label">AI 可信度</div>
+        <div class="confidence-wrap">
+          <div class="confidence-bar-bg">
+            <div class="confidence-bar-fill" style="width:${confidencePct}%"></div>
+          </div>
+          <span class="confidence-label">${confidencePct}%</span>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:6px;font-family:'Space Mono',monospace;">
+          來源: ${escHtml(c.source_platform || '—')}
+        </div>
+      </div>
+    </div>
+
+    <div class="card-footer">
+      ${hasTicket
+        ? `<a href="${escHtml(c.ticket_url)}" target="_blank" rel="noopener" class="ticket-btn available">
+             🎟️ 購票連結 ↗
+           </a>`
+        : `<span class="ticket-btn unavailable">還未有售票資訊</span>`
+      }
+    </div>
+  </div>`;
+}
+
+/* ─── Load Stats ─────────────────────────────────────── */
+async function loadStats() {
+  try {
+    const res = await fetch('/api/stats');
+    const s = await res.json();
+    document.getElementById('statOnSale').textContent   = s.on_sale ?? 0;
+    document.getElementById('statAnnounced').textContent = s.announced ?? 0;
+
+  } catch (e) {
+    console.warn('Stats load failed', e);
+  }
+}
+
+/* ─── Trigger Scan ───────────────────────────────────── */
+async function triggerScan() {
+  const btn = document.getElementById('scanBtn');
+  btn.classList.add('scanning');
+  btn.innerHTML = '<span class="scan-dot"></span> 掃描中...';
+  try {
+    const res = await fetch('/api/trigger-scan', { method: 'POST' });
+    const data = await res.json();
+    showToast(data.message || '掃描已啟動', 'info');
+  } catch (e) {
+    showToast('掃描失敗: ' + e.message, 'success');
+  } finally {
+    setTimeout(() => {
+      btn.classList.remove('scanning');
+      btn.innerHTML = '<span class="scan-dot"></span> 立即掃描';
+    }, 3000);
+  }
+}
+
+/* ─── Toast ──────────────────────────────────────────── */
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+/* ─── Util ───────────────────────────────────────────── */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

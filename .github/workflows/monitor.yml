@@ -1,0 +1,50 @@
+name: Concert Monitor Scan
+
+on:
+  schedule:
+    # 每 2 小時（UTC）；台灣時間 = UTC+8
+    - cron: "0 */2 * * *"
+  workflow_dispatch:  # 手動觸發，demo 時很有用
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download database from Render
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
+          SCAN_API_KEY: ${{ secrets.SCAN_API_KEY }}
+          DB_PATH: concerts.db
+        run: python scripts/gha_sync.py download
+        continue-on-error: true
+
+      - name: Initialize database if missing
+        env:
+          DB_PATH: concerts.db
+        run: python -c "from database import init_db; init_db()"
+
+      - name: Run monitor scan
+        env:
+          DB_PATH: concerts.db
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python monitor.py --prefer nitter
+
+      - name: Upload database to Render
+        env:
+          RENDER_URL: ${{ secrets.RENDER_URL }}
+          SCAN_API_KEY: ${{ secrets.SCAN_API_KEY }}
+          DB_PATH: concerts.db
+        run: python scripts/gha_sync.py upload

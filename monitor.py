@@ -499,36 +499,44 @@ class TicketFilter:
 
     def evaluate_link(self, url: str, title: str, snippet: str, from_query: str) -> bool:
         full_text = f"{title} {snippet} {url}".lower()
-        import re as _re  # 補上這一行
-        # 1. 嚴格排除：若內容顯式包含過去年份 (例如 "2024 巡演回顧")，立即跳過
-        # 使用正則確保是獨立數字，避免像 "20245" 這種字串誤判
+        import re as _re
+        # 1. 嚴格排除：若內容顯式包含過去年份
         if any(_re.search(rf"\b{yr}\b", full_text) for yr in self.exclude_years):
             return False
 
+        # ★ 新增：排除「總整理／全攻略」類懶人包文章 —— 這類頁面常混雜多位歌手，
+        #    導致某一個歌手的連結被誤判成另一個歌手的售票頁
+        _aggregator_keywords = ["總整理", "全攻略", "攻略", "特企", "懶人包", "彙整", "整理包"]
+        if any(kw in title for kw in _aggregator_keywords):
+            return False
+
+        # ★ 新增：歌手名字必須出現在「標題」裡才算數（不看 snippet/body）
+        #    因為 body 常常是搜尋引擎自動摘要，會把頁面裡其他歌手的名字也帶進來
+        clean_title = title.lower().replace(" ", "")
+        clean_name  = self.artist_name.lower().replace(" ", "")
+        if clean_name not in clean_title:
+            return False
+
         score = 0
-        
         # 2. 基礎信心分：若標題含有目標年份或來自包含年份的 Query
         if any(yr in full_text for yr in self.target_years):
             score += 50
         if any(yr in from_query for yr in self.target_years):
             score += 20
 
-        # 3. 關鍵字加分：藝人名稱 (核心權重)
-        # 移除空格比對，處理像 "Li SA" 或 "LiSA" 的情況
+        # 3. 關鍵字加分（名字已經在上面強制檢查過，這裡分數可以拿掉或保留當輔助分）
         clean_text = full_text.replace(" ", "")
-        clean_name = self.artist_name.lower().replace(" ", "")
         if clean_name in clean_text:
             score += 40
-        
-        # 4. 地域與售票關鍵字 (每個命中加 10 分)
-        keyword_hits = sum(1 for kw in self.essential_keywords if kw.lower() in full_text)
-        score += min(keyword_hits * 10, 40) # 最高加 40 分
 
-        # 5. 特殊規則：針對 LiSA 15週年巡演的語義補償
+        # 4. 地域與售票關鍵字
+        keyword_hits = sum(1 for kw in self.essential_keywords if kw.lower() in full_text)
+        score += min(keyword_hits * 10, 40)
+
+        # 5. 特殊規則：LiSA 15週年巡演語義補償
         if "15" in title and ("smile always" in title.lower() or "lisa" in title.lower()):
             score += 40
 
-        # 判定閾值：60 分以上視為有效連結
         return score >= 60
 
 
@@ -572,24 +580,20 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
                 results = list(ddgs.text(query, max_results=10))
             
             for r in results:
-                # 首先必須是售票平台網域
                 if any(domain in r["href"] for domain in TICKET_DOMAINS):
-                    
-                    # 使用 TicketFilter 進行權重評分
                     is_valid = ticket_filter.evaluate_link(
                         url=r["href"],
                         title=r.get("title", ""),
                         snippet=r.get("body", ""),
                         from_query=query
                     )
-                    
                     if is_valid:
                         best_url = r["href"]
                         event_name = r["title"]
                         log.info(f"[售票搜尋] ✅ 評分通過，確定售票連結: {best_url}")
                         break
                     else:
-                        log.info(f"[售票搜尋] ⏭️  評分不足，跳過連結: {r['href']}")
+                        log.info(f"[售票搜尋] ⏭️  評分不足，跳過連結: {r['href']}（title: {r.get('title','')[:50]}）")
 
             if best_url:
                 winning_results = results
@@ -638,10 +642,12 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
     # ── 合併文字：直接用找到售票平台那批結果（已含日期地點資訊）──
     info_results = winning_results[:]
 
-    combined_text = " ".join(
-        r.get("title", "") + " " + r.get("body", "")
-        for r in info_results
-    )
+    # 找出 best_url 對應的那一筆，優先使用
+    _primary = next((r for r in info_results if r["href"] == best_url), None)
+    if _primary:
+        combined_text = _primary.get("title", "") + " " + _primary.get("body", "")
+    else:
+        combined_text = " ".join(r.get("title", "") + " " + r.get("body", "") for r in info_results)
     # 把原始推文加在最前面，讓 AI 優先參考（資訊最新最準確）
     if tweet_text:
         if tweet_text:

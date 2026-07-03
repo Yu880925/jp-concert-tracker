@@ -539,7 +539,45 @@ class TicketFilter:
 
         return score >= 60
 
+import random
 
+SEARXNG_INSTANCES = [
+    "https://searx.be",
+    "https://search.inetol.net",
+    "https://priv.au",
+    "https://searx.tiekoetter.com",
+    "https://baresearch.org",
+]
+
+def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
+    """用公開 SearXNG 實例搜尋，回傳格式對齊 ddgs 的 [{'title','href','body'}]"""
+    instances = SEARXNG_INSTANCES[:]
+    random.shuffle(instances)  # 每次打亂順序，分散流量避免固定實例被鎖
+    for base in instances:
+        try:
+            r = requests.get(
+                f"{base}/search",
+                params={"q": query, "format": "json"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                timeout=10,
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            results = []
+            for item in data.get("results", [])[:max_results]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "href":  item.get("url", ""),
+                    "body":  item.get("content", ""),
+                })
+            if results:
+                log.info(f"[售票搜尋] SearXNG({base}) 取得 {len(results)} 筆")
+                return results
+        except Exception as e:
+            log.warning(f"[售票搜尋] SearXNG {base} 失敗: {e}")
+            continue
+    return []
 
 def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str = None, tweet_text: str = "") -> dict:
     """
@@ -576,8 +614,15 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
     for query in queries:
         try:
             log.info(f"[售票搜尋] 搜尋: {query}")
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=10))
+            results = _searxng_search(query, max_results=10)
+            if not results:
+                # SearXNG 全部失效才退回 ddgs 當最後手段
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(query, max_results=10))
+                except Exception as e:
+                    log.warning(f"[售票搜尋] ddgs 也失敗: {e}")
+                    results = []
             
             for r in results:
                 if any(domain in r["href"] for domain in TICKET_DOMAINS):

@@ -797,93 +797,9 @@ def fetch_tweets(twitter_handle: str, limit: int = 20, prefer: str = "nitter", a
     if prefer == "nitter":
         tweets = fetch_tweets_nitter(twitter_handle, limit)
         if tweets:
-            # 如果 Nitter 結果裡沒有台灣相關推文，補充 Google（有 7 天冷卻）
             has_tw_content = any(passes_keyword_filter(t.get("text", "")) for t in tweets)
             if not has_tw_content:
-                import datetime as _dt3
-                _cooldown_key = f"google_supplement_{twitter_handle}"
-                _should_google = True
-                try:
-                    from database import get_connection as _gc
-                    _cc = _gc(); _ccur = _cc.cursor()
-                    _ccur.execute(
-                        "SELECT scanned_at FROM monitor_log WHERE source_url = ? ORDER BY id DESC LIMIT 1",
-                        (_cooldown_key,)
-                    )
-                    _prev = _ccur.fetchone()
-                    _cc.close()
-                    if _prev:
-                        _last = _dt3.datetime.fromisoformat(_prev["scanned_at"])
-                        _diff = (_dt3.datetime.now() - _last).days
-                        if _diff < 7:
-                            _should_google = False
-                            log.info(f"Nitter 無台灣推文，Google補搜冷卻中（{_diff}/7天）: @{twitter_handle}")
-                except Exception:
-                    pass
-
-                if _should_google:
-                    _en = artist_en or artist_name
-                    _jp_hint = "日本" if artist_en else ""
-                    _sup_queries = [
-                        f"{_jp_hint}{artist_name} 台灣演唱會",
-                        f"{_en} Taiwan concert Taipei",
-                    ]
-                    added = 0
-                    existing_urls = {t["url"] for t in tweets}
-                    try:
-                        from ddgs import DDGS
-                    except ImportError:
-                        from duckduckgo_search import DDGS
-                    _name_low_sup = artist_name.lower()
-                    _en_low_sup   = (artist_en or "").lower()
-                    for _sq in _sup_queries:
-                        try:
-                            log.info(f"Nitter 無台灣相關推文，DDG補搜: {_sq}")
-                            with DDGS() as ddgs:
-                                _sup_results = list(ddgs.text(_sq, max_results=5))
-                            for _sr in _sup_results:
-                                _sr_text = (_sr.get("title","") + " " + _sr.get("body","")).lower()
-                                if not (_name_low_sup in _sr_text or
-                                        (_en_low_sup and _en_low_sup in _sr_text) or
-                                        _name_low_sup.replace(" ","") in _sr_text.replace(" ","")):
-                                    continue
-                                _sr_url = _sr["href"]
-                                # 如果 DDG 搜到的就是售票平台頁面，直接標記
-                                _is_ticket = any(d in _sr_url for d in TICKET_DOMAINS)
-                                _fake_tw = {
-                                    "id":          f"ddg_{_sr_url}",
-                                    "text":        _sr.get("title","") + " " + _sr.get("body",""),
-                                    "url":         _sr_url,
-                                    "created_at":  "", "has_media": False,
-                                    "source":      "ddg_supplement",
-                                    "ticket_url":  _sr_url if _is_ticket else None,
-                                }
-                                if _fake_tw["url"] not in existing_urls:
-                                    tweets.append(_fake_tw)
-                                    existing_urls.add(_fake_tw["url"])
-                                    added += 1
-                            time.sleep(1)
-                        except Exception as _se:
-                            log.warning(f"DDG補搜失敗: {_se}")
-                    log.info(f"DDG補搜新增 {added} 筆: @{twitter_handle}")
-                    log.info(f"Nitter 無台灣相關推文，補充 Google 搜尋: @{twitter_handle}")
-                    google_tweets = fetch_google_search(artist_name or twitter_handle, artist_en)
-                    existing_urls = {t["url"] for t in tweets}
-                    added = 0
-                    for gt in google_tweets:
-                        if gt["url"] not in existing_urls:
-                            tweets.append(gt)
-                            added += 1
-                    try:
-                        from database import get_connection as _gc2
-                        _cc2 = _gc2(); _ccur2 = _cc2.cursor()
-                        _ccur2.execute(
-                            "INSERT INTO monitor_log (source_url, platform, matched, scanned_at) VALUES (?, 'google_supplement', ?, datetime('now'))",
-                            (_cooldown_key, 1 if added > 0 else 0)
-                        )
-                        _cc2.commit(); _cc2.close()
-                    except Exception:
-                        pass
+                log.info(f"Nitter 無台灣相關推文，僅使用官方推文（不進行 DDG 補搜）: @{twitter_handle}")
             return tweets
         log.info("Nitter 無結果，改用 Google Search...")
 
@@ -907,6 +823,49 @@ def passes_keyword_filter(text: str) -> bool:
         any(kw.lower() in low for kw in TW_KEYWORDS) and
         not any(kw.lower() in low for kw in NEG_KEYWORDS)
     )
+
+
+# 不可靠來源（個人貼文、論壇等容易誤判）
+UNTRUSTED_SOURCE_DOMAINS = [
+    "facebook.com", "instagram.com", "threads.net",
+    "tiktok.com", "youtube.com", "reddit.com",
+    "ptt.cc", "dcard.tw", "mobile01.com",
+    "bilibili.com", "weibo.com",
+]
+
+
+def _artist_name_in_text(text: str, artist_name: str, artist_en: str = "") -> bool:
+    """嚴格比對歌手名稱，避免 'aimer' 等短名誤判。"""
+    combined = text.lower()
+    compact_text = combined.replace(" ", "").replace(".", "")
+    for raw in [artist_name, artist_en]:
+        if not raw:
+            continue
+        name = raw.lower().strip()
+        compact_name = name.replace(" ", "").replace(".", "")
+        if len(name) <= 6:
+            if re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", combined):
+                return True
+            if compact_name and len(compact_name) >= 4 and compact_name in compact_text:
+                return True
+        elif name in combined or compact_name in compact_text:
+            return True
+    return False
+
+
+def _is_untrusted_source(url: str) -> bool:
+    u = (url or "").lower()
+    return any(d in u for d in UNTRUSTED_SOURCE_DOMAINS)
+
+
+def _is_past_concert_date(date_str: str | None) -> bool:
+    if not date_str:
+        return False
+    import datetime as _dt
+    try:
+        return _dt.date.fromisoformat(date_str) < _dt.date.today()
+    except ValueError:
+        return True
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1108,41 +1067,24 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
         if text.strip().startswith("RT "):
             continue
 
-        # DDG 補搜的假推文跳過官方帳號驗證（本來就不是推文）
-        if tw.get("source") != "ddg_supplement":
-            # 只處理歌手官方帳號的推文（handle 比對）
-            if handle and tw_url:
-                _handle_lower = handle.lower()
-                _url_lower    = tw_url.lower()
-                if _handle_lower not in _url_lower:
-                    log.info(f"[{name}] ⏭️  非官方帳號推文，跳過: {tw_url}")
-                    continue
+        if _is_untrusted_source(tw_url):
+            log.info(f"[{name}] ⏭️  不可靠來源，跳過: {tw_url}")
+            continue
+
+        # 只處理歌手官方帳號的推文（handle 比對）
+        is_official_tweet = bool(handle and tw_url and handle.lower() in tw_url.lower())
+        if not is_official_tweet:
+            log.info(f"[{name}] ⏭️  非官方帳號推文，跳過: {tw_url}")
+            continue
 
         if not passes_keyword_filter(text):
             continue
 
-        log.info(f"[{name}] 🔍 關鍵字命中！{tw_url}")
+        if not _artist_name_in_text(text, name, artist.get("name_en", "")):
+            log.info(f"[{name}] ⏭️  推文未明確提及歌手名稱，跳過: {tw_url}")
+            continue
 
-        # DDG 補搜的假推文：跳過 AI 日期分析，直接用 Google 搜尋售票（只在尚未找到票時）
-        if tw.get("source") == "ddg_supplement":
-            # 如果假推文本身就是售票連結，直接設為 ticket_cache
-            if tw.get("ticket_url") and _ticket_cache is None:
-                log.info(f"[{name}] 🎟️  DDG補搜直接找到售票連結: {tw['ticket_url']}")
-                _ticket_cache = search_ticket_url(
-                    artist_name=name,
-                    artist_en=artist.get("name_en", ""),
-                    concert_date=None,
-                    tweet_text=text,
-                )
-            elif _ticket_cache is None:
-                log.info(f"[{name}] 🎟️  DDG補搜觸發售票搜尋...")
-                _ticket_cache = search_ticket_url(
-                    artist_name=name,
-                    artist_en=artist.get("name_en", ""),
-                    concert_date=None,
-                    tweet_text=text,
-                )
-            continue  # 不做 AI 分析，跳到下一則
+        log.info(f"[{name}] 🔍 關鍵字命中！{tw_url}")
 
         # 已掃描過且 AI 判定非演唱會的推文，直接跳過
         conn = get_connection()
@@ -1175,22 +1117,12 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
         conn.close()
 
         if not result:
-            log.warning(f"[{name}] ⚠️  AI 回傳 None（API 失敗或無可用 Key），跳過售票搜尋")
-            upsert_concert(
-                artist_id=art_id,
-                event_name=f"{name} 台灣公演（疑似）",
-                venue="未定", concert_date=None,
-                ticket_status="rumor", is_confirmed=0,
-                ai_confidence=0.5,
-                source_url=tw["url"], source_text=text[:500],
-                source_platform="X (Twitter)",
-                notes="關鍵字命中，AI 分析失敗故無法確認",
-            )
+            log.warning(f"[{name}] ⚠️  AI 回傳 None（API 失敗或無可用 Key），跳過")
             continue
 
         log.info(f"[{name}] 🤖 AI結果: is_concert={result.get('is_concert')} date={result.get('date')} dates={result.get('dates')} ticket_url={result.get('ticket_url')!r}")
 
-        if result.get("is_concert") in (True, "maybe"):
+        if result.get("is_concert") is True:
             # 支援多日期：dates 陣列優先，否則用單一 date
             dates = result.get("dates") or []
             if not dates and result.get("date"):
@@ -1333,6 +1265,10 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                 concert_url   = session.get("url") or final_ticket_url
                 concert_venue = session.get("venue") or google_venue or ai_venue or "未定"
 
+                if _is_past_concert_date(concert_date):
+                    log.info(f"[{name}] ⏭️  跳過：演出日期已過 ({concert_date})")
+                    continue
+
                 # 日期未定且沒有售票連結 → 資訊太不完整，跳過不寫入
                 if concert_date is None and not concert_url:
                     log.info(f"[{name}] ⏭️  跳過：日期未定且無售票連結，資訊不足")
@@ -1374,42 +1310,6 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                 upsert_concert(**concert)
                 found.append(concert)
                 log.info(f"[{name}] ✅ 發現演唱會！{concert_date} @ {concert_venue}  售票:{concert_url}")
-
-    # DDG 補搜找到售票但沒有推文寫入時，直接用 ticket_cache 寫入
-    # 只有找到售票連結才寫入，避免把新聞頁面的不完整資料寫進去
-    if _ticket_cache and not found:
-        _tc = _ticket_cache
-        if _tc.get("ticket_url"):  # 必須有售票連結
-            import datetime as _dt_ddg
-            _sessions = _tc.get("sessions") or []
-            if not _sessions:
-                _sessions = [{"date": _tc.get("found_date"), "venue": _tc.get("venue"), "url": _tc.get("ticket_url")}]
-            for _s in _sessions:
-                _cd  = _s.get("date")
-                _cu  = _s.get("url") or _tc.get("ticket_url")
-                _cv  = _s.get("venue") or _tc.get("venue") or "未定"
-                if not _cd and not _cu:
-                    continue
-                concert = dict(
-                    artist_id=art_id,
-                    event_name=_tc.get("event_name") or f"{name} 台灣公演",
-                    venue=_cv,
-                    concert_date=_cd,
-                    ticket_url=_cu,
-                    ticket_status="on_sale" if _cu else "announced",
-                    is_confirmed=1,
-                    ai_confidence=0.9,
-                    source_url="ddg_supplement",
-                    source_text="",
-                    source_platform="DDG Search",
-                    notes="DDG補搜找到",
-                )
-                _written_key = f"{_cd}_{_cv}"
-                if _written_key not in _written_dates:
-                    _written_dates.add(_written_key)
-                    upsert_concert(**concert)
-                    found.append(concert)
-                    log.info(f"[{name}] ✅ DDG補搜寫入！{_cd} @ {_cv}  售票:{_cu}")
 
     return found
 

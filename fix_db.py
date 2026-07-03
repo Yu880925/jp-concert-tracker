@@ -1,9 +1,6 @@
-import sqlite3
-from pathlib import Path
+"""一次性清理：刪除過期演唱會與 DDG 誤抓資料"""
+from database import cleanup_old_concerts, init_db
 
-conn = sqlite3.connect(Path(__file__).parent / "concerts.db")
-cur = conn.cursor()
-cur.execute("DELETE FROM monitor_log WHERE platform = 'google_supplement'")
-print(f"刪除 {cur.rowcount} 筆冷卻記錄")
-conn.commit()
-conn.close()
+init_db()
+cleanup_old_concerts()
+print("清理完成")

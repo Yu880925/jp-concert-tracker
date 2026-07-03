@@ -316,17 +316,20 @@ def _migrate_db():
 
 
 def cleanup_old_concerts():
-    """刪除演出日期已超過 7 天的記錄"""
+    """刪除已過演出日期的記錄，並清除 DDG 補搜誤抓的資料。"""
     import datetime
-    cutoff = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    today = datetime.date.today().isoformat()
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM concerts WHERE concert_date IS NOT NULL AND concert_date < ?", (cutoff,))
-    deleted = cur.rowcount
+    cur.execute("DELETE FROM concerts WHERE concert_date IS NOT NULL AND concert_date < ?", (today,))
+    past_deleted = cur.rowcount
+    cur.execute("DELETE FROM concerts WHERE source_platform = 'DDG Search' OR source_url = 'ddg_supplement'")
+    ddg_deleted = cur.rowcount
     conn.commit()
     conn.close()
-    if deleted:
-        print(f"[DB] 清除 {deleted} 筆過期演唱會記錄（7天前）")
+    total = past_deleted + ddg_deleted
+    if total:
+        print(f"[DB] 清除 {past_deleted} 筆過期演唱會、{ddg_deleted} 筆 DDG 誤抓記錄")
 
 
 def get_all_artists():
@@ -347,6 +350,7 @@ def get_concerts_by_artists(artist_ids: list):
         FROM concerts c
         JOIN artists a ON a.id = c.artist_id
         WHERE c.artist_id IN ({placeholders})
+          AND (c.concert_date IS NULL OR c.concert_date >= date('now'))
         ORDER BY c.concert_date ASC
     """, artist_ids)
     concerts = [dict(r) for r in cur.fetchall()]
@@ -373,6 +377,14 @@ def get_artists_with_concert_status():
 
 
 def upsert_concert(artist_id, event_name, venue, concert_date, **kwargs):
+    import datetime as _dt
+    if concert_date:
+        try:
+            if _dt.date.fromisoformat(concert_date) < _dt.date.today():
+                return
+        except ValueError:
+            return
+
     conn = get_connection()
     cur = conn.cursor()
 

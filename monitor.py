@@ -23,6 +23,13 @@ from typing import Optional, Dict, Any, List
 
 import requests
 
+# ★ 載入 .env 檔案裡的環境變數（一定要在讀取任何 os.getenv 之前執行）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # 預設會找執行目錄下的 .env，也可以指定路徑: load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    print("⚠️  未安裝 python-dotenv，.env 檔案不會被讀取。請執行: pip install python-dotenv")
+
 # ──────────────────────────────────────────────────────────────────
 
 # ─── API Credentials（全部從環境變數讀取，勿寫死在程式碼）────────
@@ -186,7 +193,7 @@ def _fetch_fxtwitter_user_tweets(twitter_handle: str, limit: int) -> list[dict]:
                 r = requests.get(
                     f"{instance}/{twitter_handle}/rss",
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-                    timeout=10,
+                    timeout=15,
                 )
                 if r.status_code != 200:
                     continue
@@ -227,7 +234,7 @@ def _fetch_fxtwitter_user_tweets(twitter_handle: str, limit: int) -> list[dict]:
             r = requests.get(
                 f"https://api.fxtwitter.com/{twitter_handle}/status/{tid}",
                 headers={"User-Agent": "JPConcertTracker/1.0"},
-                timeout=10,
+                timeout=15,
             )
             if r.status_code != 200:
                 continue
@@ -327,17 +334,41 @@ def fetch_google_search(artist_name: str, artist_en: str = "") -> list[dict]:
 
 # 已知售票平台 domain，優先排序
 TICKET_DOMAINS = [
-    "kktix.com", "kktix.cc",  # kktix.cc 包含台灣子域名如 kklivetw.kktix.cc
+    # KKTIX
+    "kktix.com",
+    "kktix.cc",
+
+    # Ticket Plus
     "ticketplus.com.tw",
-    "indievox.com",
-    "ibon.com.tw",
-    "famiticket.com",
-    "ticket.com.tw",
-    "cityline.com.tw",
-    "accupass.com",
-    "ticketmaster.com.tw",
+
+    # tixCraft
     "tixcraft.com",
-    "urbtix.hk",
+
+    # 寬宏售票
+    "kham.com.tw",
+    "khamticket.com",
+    "khart.com.tw",
+
+    # 年代售票
+    "ticket.com.tw",
+
+    # ibon
+    "ibon.com.tw",
+    "ticket.ibon.com.tw",
+
+    # 全家
+    "famiticket.com",
+    "famiticket.com.tw",
+
+    # Ticketmaster Taiwan
+    "ticketmaster.com.tw",
+
+    # UDN 售票網
+    "udnfunlife.com",
+    "tickets.udnfunlife.com",
+
+    # UITicket
+    "uiticket.com.tw",
 ]
 
 def _clean_event_name_with_ai(raw_title: str, artist_name: str) -> str | None:
@@ -365,7 +396,7 @@ def _clean_event_name_with_ai(raw_title: str, artist_name: str) -> str | None:
                     "max_tokens": 60,
                     "temperature": 0.0,
                 },
-                timeout=10,
+                timeout=15,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"].strip()
@@ -387,7 +418,7 @@ def _clean_event_name_with_ai(raw_title: str, artist_name: str) -> str | None:
                     "max_tokens": 60,
                     "temperature": 0.0,
                 },
-                timeout=10,
+                timeout=15,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"].strip()
@@ -396,26 +427,90 @@ def _clean_event_name_with_ai(raw_title: str, artist_name: str) -> str | None:
     return None
 
 
+def _extract_explicit_dates_from_text(text: str) -> dict:
+    """
+    用 regex 從原文抓出「YYYY年M月D日」「YYYY-MM-DD」「YYYY/MM/DD」等明確年份寫法。
+    回傳 {(month, day): year} —— 這是原文「白紙黑字」寫的年份，比 AI 判斷可靠。
+    """
+    explicit = {}
+    patterns = [
+        r"(\d{4})年(\d{1,2})月(\d{1,2})日",
+        r"(\d{4})-(\d{1,2})-(\d{1,2})",
+        r"(\d{4})/(\d{1,2})/(\d{1,2})",
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, text):
+            y, mo, d = m.group(1), int(m.group(2)), int(m.group(3))
+            explicit[(mo, d)] = y
+    return explicit
+
+
+def _correct_ai_dates_with_source_text(dates: list, text: str) -> list:
+    """
+    ★ 核心防線：AI（尤其是 8B 小模型）在被要求「只回傳未來場次」時，
+      遇到原文明寫的過去日期，常常不會老實回傳空陣列，而是直接把年份
+      「捏」成未來年份濫竽充數（例如原文寫 2025年8月30日，AI 卻回 2026-08-30）。
+      這裡用原文裡明確寫出的年份蓋掉 AI 自己改過的年份，年份以原文為準，
+      月/日不變。修正後如果變成過去日期，交給呼叫端既有的
+      _is_past_concert_date() 去過濾，而不是靠 AI 自己判斷。
+    """
+    explicit = _extract_explicit_dates_from_text(text)
+    if not explicit:
+        return dates
+    corrected = []
+    for d in dates:
+        try:
+            y, mo, day = d.split("-")
+            key = (int(mo), int(day))
+        except Exception:
+            corrected.append(d)
+            continue
+        if key in explicit and explicit[key] != y:
+            fixed = f"{explicit[key]}-{mo}-{day}"
+            log.info(f"[售票搜尋] ⚠️  AI年份與原文不符，已修正: {d} → {fixed}")
+            corrected.append(fixed)
+        else:
+            corrected.append(d)
+    return corrected
+
+
 def _extract_concert_info_with_ai(text: str, artist_name: str, today: str) -> dict:
     """
     從搜尋結果合併文字中，用 AI 萃取演唱會日期和地點。
-    只回傳未來的場次，避免抓到舊演唱會。
+    年份正確性不交給 AI 判斷 —— AI 只負責抓出文字裡寫了什麼日期，
+    過去/未來的篩選跟年份校正都在這裡用規則做，因為小模型在這種
+    「必須符合某個條件」的任務上，容易用竄改資料的方式來迎合指令。
+    """
+    ai_info = _extract_concert_info_with_ai_call(text, artist_name, today)
+    ai_info["dates"] = _correct_ai_dates_with_source_text(ai_info.get("dates") or [], text)
+    return ai_info
+
+
+def _extract_concert_info_with_ai_call(text: str, artist_name: str, today: str) -> dict:
+    """
+    從搜尋結果合併文字中，用 AI 萃取演唱會日期和地點。
     """
     prompt = (
         "以下搜尋結果文字中可能包含多個不同歌手的演唱會資訊。\n"
-        "今天日期是 " + today + "。\n\n"
+        "今天日期是 " + today + "。（這只是給你參考現在幾號，絕對不可以把這個日期當成演唱會日期回傳）\n\n"
         "你的任務：只找出【" + artist_name + "】在台灣/台北的演唱會日期和地點。\n\n"
+        "你只能根據文字中明確描述的資訊回答。\n"
+        "禁止推論。\n"
         "嚴格規則：\n"
         "- 只抓明確屬於【" + artist_name + "】的場次，其他歌手的日期一律忽略\n"
-        "- 只抓台灣或台北的場次，忽略首爾、香港、新加坡、東京等其他城市\n"
-        "- 只回傳今天之後的未來場次，忽略過去的演唱會\n"
-        "- 如果找不到【" + artist_name + "】的台灣明確未來場次，dates 回傳空陣列\n"
+        "- 只抓台灣或台北的場次，忽略首爾、香港、新加坡、東京、大阪等所有外國城市\n"
+        "- 忠實抄錄文字中明確寫出的年月日，絕對不可以自己修改、推算或「校正」年份\n"
+        "  （例如文字寫 2025年8月30日，就必須回傳 2025-08-30，不可以改成其他年份）\n"
+        "- 如果找不到【" + artist_name + "】的台灣明確場次，dates 回傳空陣列\n"
         "- 日期格式統一為 YYYY-MM-DD\n"
+        "- 確認同個歌手同個活動不只一天，dates 回傳多個日期\n"
         "- event_name 填寫 tour/活動的正式名稱（如有），沒有就填 null\n"
         "- 只回傳 JSON，不要其他說明\n\n"
+        "如果你不確定，寧可回傳空陣列。"
         'JSON格式：{"dates": ["2026-05-23"], "venue": "台北國際會議中心", "event_name": "Tour名稱"}\n'
         '找不到時：{"dates": [], "venue": null, "event_name": null}\n\n'
         "搜尋文字：\n" + text[:3000]
+        
     )
     if GROQ_KEY:
         for _attempt in range(3):
@@ -486,84 +581,200 @@ def _extract_concert_info_with_ai(text: str, artist_name: str, today: str) -> di
     return {"dates": [], "venue": None}
 
 
+
+# ==============================
+# Search cache / rate control
+# ==============================
+SEARCH_CACHE_FILE = "search_cache.json"
+SEARCH_CACHE_TTL = 1800  # 30 minutes
+
+def load_search_cache() -> dict:
+    try:
+        with open(SEARCH_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_search_cache(cache: dict) -> None:
+    try:
+        with open(SEARCH_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def cached_wait() -> None:
+    time.sleep(random.uniform(2.5, 5.5))
+
+
 class TicketFilter:
     """
-    售票連結過濾器：採用權重評分制，減少對 URL 年份字串的依賴。
+    售票連結過濾器：阶段式过滤 + 評分制
+    第一關：硬性排除條件（排除明顯不符的連結）
+    第二關：評分制（在通過硬性條件後才評分）
     """
     def __init__(self, target_years: List[str], artist_name: str):
         self.target_years = target_years
-        self.artist_name = artist_name
+        self.artist_name = artist_name.lower()
         # 排除 2010 到目標年份前一年的資料 (防止抓到過期資訊)
         self.exclude_years = [str(y) for y in range(2010, int(target_years[0]))]
-        self.essential_keywords = ["台北", "Taipei", "小巨蛋", "演唱會", "Concert", "Ticket", "售票", "KKTIX", "TicketPlus", "遠大"]
+        
+        # ★ 台灣關鍵詞：包含這些 = 台灣場次
+        self.tw_indicators = ["台灣", "台湾", "taipei", "台北", "小巨蛋", "arena"]
+        
+        # ★ 外國城市黑名單：包含這些 = 直接排除（不是台灣場次）
+        self.foreign_cities = [
+            "hongkong", "hk", "hong kong",
+            "bangkok", "thailand", "ไทย",
+            "manila", "philippines",
+            "seoul", "korea", "서울",
+            "tokyo", "osaka", "fukuoka", "nagoya", "japan", "kobe", "kyoto", "yokohama", "sapporo",
+            "asiaworld", "marine messe", "zepp", "makuhari", "saitama",
+        ]
+        
+        # 售票平台關鍵詞
+        self.ticket_keywords = ["票", "售票", "購票", "ticket", "kktix", "ticketplus", "tixcraft", "indievox"]
 
     def evaluate_link(self, url: str, title: str, snippet: str, from_query: str) -> bool:
         full_text = f"{title} {snippet} {url}".lower()
         import re as _re
-        # 1. 嚴格排除：若內容顯式包含過去年份
-        if any(_re.search(rf"\b{yr}\b", full_text) for yr in self.exclude_years):
+
+        # ════════════════════════════════════════════════════════
+        # ★ 第一關：硬性排除條件（符合任一個就 return False）
+        # ════════════════════════════════════════════════════════
+
+        # 1. 排除「過時年份」內容
+        #    ★ 原本用 \b{yr}\b，但中文「年」被視為單詞字元，
+        #      導致「2025年8月30日」這種寫法完全比對不到 \b 邊界，過期連結永遠排除不掉。
+        #      改用「前後不是數字」而非「單詞邊界」，中英文年份格式都能正確排除。
+        if any(_re.search(rf"(?<!\d){yr}(?!\d)", full_text) for yr in self.exclude_years):
+            log.info("[TicketFilter] reject: old year")
             return False
 
-        # ★ 新增：排除「總整理／全攻略」類懶人包文章 —— 這類頁面常混雜多位歌手，
-        #    導致某一個歌手的連結被誤判成另一個歌手的售票頁
-        _aggregator_keywords = ["總整理", "全攻略", "攻略", "特企", "懶人包", "彙整", "整理包"]
-        if any(kw in title for kw in _aggregator_keywords):
+        # 2. 排除「活動列表頁」（沒有具體活動 ID）
+        if _re.search(r"/(activity|event|ticket)/?$", url.lower()):
+            log.info("[TicketFilter] reject: list page")
             return False
 
-        # ★ 新增：歌手名字必須出現在「標題」裡才算數（不看 snippet/body）
-        #    因為 body 常常是搜尋引擎自動摘要，會把頁面裡其他歌手的名字也帶進來
-        clean_title = title.lower().replace(" ", "")
-        clean_name  = self.artist_name.lower().replace(" ", "")
-        if clean_name not in clean_title:
+        # 3. 排除「總整理/全攻略」類懶人包
+        aggregator_keywords = ["總整理", "总整理", "全攻略", "特企", "懶人包", "攻略", "彙整", "情報整理", "速報"]
+        if any(kw in title.lower() for kw in aggregator_keywords):
             return False
+
+        # 4. ★ 排除「明確的外國城市」—— 關鍵！
+        #    如果 URL 或 title 明確說是外國城市，不管其他條件都排除
+        if any(city in full_text for city in self.foreign_cities):
+            log.info("[TicketFilter] reject: foreign city")
+            return False
+
+        # 5. ★ 歌手名字必須在「標題」中出現（不看 snippet）
+        #    因為 snippet 是搜尋引擎摘要，常混雜其他歌手
+        search_text = f"{title} {snippet} {url}".lower()
+        clean_name = self.artist_name.replace(" ", "")
+
+        if not _artist_name_in_text(
+            f"{title} {snippet} {url}",
+            self.artist_name,
+        ):
+            log.info(
+                "[TicketFilter] reject: artist mismatch\nartist=%s\ntitle=%s",
+                clean_name,
+                search_text,
+            )
+            return False
+
+        # ════════════════════════════════════════════════════════
+        # ★ 第二關：才開始計分（通過了上面所有硬性條件）
+        # ════════════════════════════════════════════════════════
 
         score = 0
-        # 2. 基礎信心分：若標題含有目標年份或來自包含年份的 Query
+        detail = []
+
+        tw_hits = sum(1 for tw in self.tw_indicators if tw in full_text)
+        score += tw_hits * 20
+        if tw_hits:
+            detail.append(f"tw+{tw_hits*20}")
+
         if any(yr in full_text for yr in self.target_years):
-            score += 50
-        if any(yr in from_query for yr in self.target_years):
+            score += 30
+            detail.append("year+30")
+
+        # C. 售票平台關鍵詞
+        ticket_hits = sum(1 for kw in self.ticket_keywords if kw.lower() in full_text)
+        score += min(ticket_hits * 10, 30)  # 最高 +30
+
+        # D. Tour/演唱會名稱指標
+        if any(kw in title.lower() for kw in ["tour", "演唱會", "concert", "live"]):
+            score += 15
+
+        # E. 特殊規則：LiSA 15週年巡演
+        if "15" in title and ("smile always" in title.lower() or "lisa" in title.lower()):
             score += 20
 
-        # 3. 關鍵字加分（名字已經在上面強制檢查過，這裡分數可以拿掉或保留當輔助分）
-        clean_text = full_text.replace(" ", "")
-        if clean_name in clean_text:
-            score += 40
+        log.info(
+            "[TicketFilter]\n"
+            "title=%s\n"
+            "snippet=%s\n"
+            "url=%s",
+            title,
+            snippet,
+            url,
+        )
 
-        # 4. 地域與售票關鍵字
-        keyword_hits = sum(1 for kw in self.essential_keywords if kw.lower() in full_text)
-        score += min(keyword_hits * 10, 40)
+        log.info(f"[售票搜尋] 評分: {score}")   
+        # 判定門檻：改成 50 分（之前 60 分太高，容易漏掉正確的）
+        return score >= 40
 
-        # 5. 特殊規則：LiSA 15週年巡演語義補償
-        if "15" in title and ("smile always" in title.lower() or "lisa" in title.lower()):
-            score += 40
 
-        return score >= 60
+# ════════════════════════════════════════════════════════════════
+# ★ SearXNG 多實例輪詢搜尋 —— 免費開源搜尋服務，穩定性比直接打 Google/Brave 更好
+# ════════════════════════════════════════════════════════════════
 
-import random
 
-SEARXNG_INSTANCES = [
-    "https://searx.be",
-    "https://search.inetol.net",
-    "https://priv.au",
-    "https://searx.tiekoetter.com",
-    "https://baresearch.org",
-]
+# ★ 自架實例：優先使用，不會被公開流量限流，永遠排第一個嘗試
+LOCAL_SEARXNG_INSTANCE = os.getenv("LOCAL_SEARXNG_URL", "http://localhost:8080")
+
+SEARXNG_INSTANCES = []  # disable public instances  # 停用公開實例，只使用 localhost
+
+# Search order: localhost SearXNG -> DDGS fallback
 
 def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
-    """用公開 SearXNG 實例搜尋，回傳格式對齊 ddgs 的 [{'title','href','body'}]"""
-    instances = SEARXNG_INSTANCES[:]
-    random.shuffle(instances)  # 每次打亂順序，分散流量避免固定實例被鎖
+    """
+    用公開 SearXNG 實例搜尋，回傳格式對齊 ddgs 的 [{'title','href','body'}]
+
+    ★ 診斷強化：不論成功/失敗/空結果，每個實例都會留下一行 log，
+      方便判斷到底是「連不上」「被擋（非 200）」「回傳空結果」還是「JSON 解析失敗」。
+    ★ 優先順序：自架實例（不會被限流）先試，公開實例只當備援，且不打亂順序，
+      確保自架實例永遠是第一個被嘗試的。
+    """
+    import random as _rand
+    instances = [LOCAL_SEARXNG_INSTANCE]
+
+    attempted = 0
     for base in instances:
+        name = base.split("/")[-1]
+        attempted += 1
+        if attempted > 1:
+            # 每個實例之間加一點隨機延遲，避免短時間內連環打多站被當成爬蟲流量
+            time.sleep(_rand.uniform(0.8, 1.8))
         try:
             r = requests.get(
                 f"{base}/search",
                 params={"q": query, "format": "json"},
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-                timeout=10,
+                timeout=15,
             )
             if r.status_code != 200:
+                log.info(f"[售票搜尋] SearXNG({name}) 回傳非 200 狀態碼: {r.status_code}，跳過")
                 continue
-            data = r.json()
+
+            try:
+                data = r.json()
+            except ValueError:
+                # 常見情況：實例把 JSON API 關掉了，改回傳 HTML/空白頁
+                snippet = r.text[:80].replace("\n", " ")
+                log.warning(f"[售票搜尋] SearXNG({name}) 回傳非 JSON 內容（可能已停用 JSON API），內容開頭: {snippet!r}")
+                continue
+
             results = []
             for item in data.get("results", [])[:max_results]:
                 results.append({
@@ -571,41 +782,102 @@ def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
                     "href":  item.get("url", ""),
                     "body":  item.get("content", ""),
                 })
+
             if results:
-                log.info(f"[售票搜尋] SearXNG({base}) 取得 {len(results)} 筆")
+                log.info(f"[售票搜尋] SearXNG({name}) 取得 {len(results)} 筆")
                 return results
-        except Exception as e:
-            log.warning(f"[售票搜尋] SearXNG {base} 失敗: {e}")
+            else:
+                log.info(f"[售票搜尋] SearXNG({name}) 回應 200 但無搜尋結果，跳過")
+
+        except requests.exceptions.Timeout:
+            log.warning(f"[售票搜尋] SearXNG({name}) 連線逾時，跳過")
             continue
+        except requests.exceptions.RequestException as e:
+            log.warning(f"[售票搜尋] SearXNG({name}) 連線失敗: {e}")
+            continue
+        except Exception as e:
+            log.warning(f"[售票搜尋] SearXNG({name}) 未預期錯誤: {e}")
+            continue
+
+    log.warning(f"[售票搜尋] 所有 {attempted} 個 SearXNG 實例皆無有效結果，改用 ddgs fallback")
     return []
 
-def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str = None, tweet_text: str = "") -> dict:
+
+# ════════════════════════════════════════════════════════════════
+# ★ search_ticket_url 狀態機定義
+#   每個階段只能回傳下列四種狀態之一，呼叫端用狀態分流，
+#   不再靠「欄位是不是 None」去反推發生了什麼事。
+# ════════════════════════════════════════════════════════════════
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Optional as _Optional, List as _List
+
+
+class TicketSearchStatus(Enum):
+    TICKET_FOUND = "ticket_found"   # 找到售票平台連結（日期/地點可能仍不完整，但連結是真的）
+    DATE_ONLY    = "date_only"      # 沒找到售票連結，但從新聞/搜尋結果找到確切日期
+    NOT_FOUND    = "not_found"      # 連日期都沒找到，完全沒有可用資訊
+    SEARCH_ERROR = "search_error"   # 搜尋機制本身出錯（缺套件、例外等），跟「找不到」是不同狀態
+
+
+@dataclass
+class TicketSearchResult:
+    status: TicketSearchStatus
+    ticket_url: _Optional[str] = None
+    event_name: _Optional[str] = None
+    venue: _Optional[str] = None
+    sessions: _List[dict] = field(default_factory=list)
+    error: _Optional[str] = None
+
+    @property
+    def found_date(self) -> _Optional[str]:
+        return self.sessions[0]["date"] if self.sessions else None
+
+    def to_dict(self) -> dict:
+        """轉成舊呼叫端原本期待的 dict 格式，額外附上 status 讓呼叫端可以明確分流。"""
+        return {
+            "status":     self.status.value,
+            "ticket_url": self.ticket_url,
+            "found_date": self.found_date,
+            "event_name": self.event_name,
+            "venue":      self.venue,
+            "sessions":   self.sessions,
+        }
+
+from datetime import datetime
+
+def _validate_news_result(ai_info, today):
+    dates = ai_info.get("dates", [])
+
+    if not dates:
+        return False
+
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+
+    for d in dates:
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+
+            # 不接受今天
+            if dt <= today_dt:
+                return False
+
+            # 超過兩年也不要
+            if (dt - today_dt).days > 730:
+                return False
+
+        except Exception:
+            return False
+
+    return True
+
+def _stage1_search_ticket_platform(artist_name: str, queries: list, ticket_filter: "TicketFilter"):
     """
-    整合 TicketFilter 權重機制的售票搜尋。
+    階段 1：在售票平台網域中尋找符合評分門檻的連結。
+    成功 → (best_url, raw_event_name, winning_results)
+    失敗 → (None, None, [])
     """
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        from duckduckgo_search import DDGS
-        log.error("[售票搜尋] 找不到 ddgs")
-        return {"ticket_url": None, "found_date": None, "event_name": None, "venue": None, "sessions": []}
-
-    import datetime as _dt
-
-    _yr    = _dt.date.today().year
-    _today = _dt.date.today().isoformat()
-    
-    # 初始化權重過濾器 (目標今年與明年)
-    ticket_filter = TicketFilter(target_years=[str(_yr), str(_yr+1)], artist_name=artist_name)
-
-    # ... (保留你原本的 _find_dates, _find_venue 輔助函數) ...
-
-    _jp_hint = "日本" if artist_en else ""
-    queries = [
-        f"{_jp_hint}{artist_name} 台灣演唱會 {_yr} 售票",
-        f"{_jp_hint}{artist_name} 台灣演唱會 {_yr+1} 售票",
-        f"{artist_name} kktix OR ticketplus 台灣",
-    ]
+    from ddgs import DDGS
 
     best_url = None
     event_name = None
@@ -616,21 +888,24 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
             log.info(f"[售票搜尋] 搜尋: {query}")
             results = _searxng_search(query, max_results=10)
             if not results:
-                # SearXNG 全部失效才退回 ddgs 當最後手段
                 try:
                     with DDGS() as ddgs:
                         results = list(ddgs.text(query, max_results=10))
+                    if not results:
+                        log.info(f"[售票搜尋] ddgs 也回傳 0 筆結果: {query}")
                 except Exception as e:
                     log.warning(f"[售票搜尋] ddgs 也失敗: {e}")
                     results = []
-            
+            from pprint import pformat
+            log.info("[DDGS]\n%s", pformat(results[:3]))
+
             for r in results:
                 if any(domain in r["href"] for domain in TICKET_DOMAINS):
+                    import pprint
+                    log.info("result=\n%s", pprint.pformat(r))
                     is_valid = ticket_filter.evaluate_link(
-                        url=r["href"],
-                        title=r.get("title", ""),
-                        snippet=r.get("body", ""),
-                        from_query=query
+                        url=r["href"], title=r.get("title", ""),
+                        snippet=r.get("body", ""), from_query=query,
                     )
                     if is_valid:
                         best_url = r["href"]
@@ -638,111 +913,163 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
                         log.info(f"[售票搜尋] ✅ 評分通過，確定售票連結: {best_url}")
                         break
                     else:
-                        log.info(f"[售票搜尋] ⏭️  評分不足，跳過連結: {r['href']}（title: {r.get('title','')[:50]}）")
+                        log.info(f"[售票搜尋] ⏭️  評分不足，跳過連結: {r['href']}")
 
             if best_url:
                 winning_results = results
                 break
-            time.sleep(1.5)
+            time.sleep(4)
         except Exception as e:
             log.warning(f"[售票搜尋] 失敗 [{query}]: {e}")
 
-    if not best_url:
-        # 找不到售票平台，但嘗試從新聞/資訊網站抓日期地點
-        log.info("[售票搜尋] 未找到售票平台，嘗試從搜尋結果抓日期地點...")
-        _all_news_results = []
-        for query in queries[:2]:  # 只用前兩個 query 的結果
-            try:
-                with DDGS() as ddgs:
-                    _nr = list(ddgs.text(query, max_results=8))
-                _all_news_results.extend(_nr)
-                time.sleep(1)
-            except Exception:
-                pass
-        if _all_news_results:
-            _news_text = " ".join(r.get("title","") + " " + r.get("body","") for r in _all_news_results)
-            if tweet_text:
-                _news_text = "[原始推文]\n" + tweet_text + "\n\n[搜尋結果]\n" + _news_text
-            _news_ai    = _extract_concert_info_with_ai(_news_text, artist_name, _today)
-            _news_dates = _news_ai.get("dates") or []
-            _news_venue = _news_ai.get("venue")
-            _news_event = _news_ai.get("event_name")
-            if _news_dates:
-                log.info(f"[售票搜尋] 📅 從新聞找到日期: {_news_dates}（無售票連結）")
-                _news_sessions = [{"date": d, "venue": _news_venue, "url": None} for d in _news_dates]
-                return {
-                    "ticket_url": None,
-                    "found_date": _news_dates[0],
-                    "event_name": _news_event,
-                    "venue":      _news_venue,
-                    "sessions":   _news_sessions,
-                }
+    return best_url, event_name, winning_results
 
 
+import datetime as _dt_validate
+
+_CN_DATE_RE = re.compile(r"(?:(\d{4})\s*年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_ISO_DATE_RE = re.compile(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})")
 
 
+def _extract_explicit_dates_from_text(text: str) -> list[tuple]:
+    """從原始搜尋/新聞文字中，抓出文字裡『明確寫出來』的日期 (year_or_None, month, day)。"""
+    out = []
+    for m in _CN_DATE_RE.finditer(text):
+        yr = int(m.group(1)) if m.group(1) else None
+        out.append((yr, int(m.group(2)), int(m.group(3))))
+    for m in _ISO_DATE_RE.finditer(text):
+        out.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    return out
 
-        return {"ticket_url": None, "found_date": None, "event_name": None, "venue": None, "sessions": []}
 
-    # ── 合併文字：直接用找到售票平台那批結果（已含日期地點資訊）──
-    info_results = winning_results[:]
+def _validate_and_fix_ai_dates(ai_dates: list[str], raw_text: str, today: str) -> list[str]:
+    """
+    交叉比對 AI 抽取出的日期跟原文明確寫出的日期。
+    小模型常見的失敗模式：原文明明寫「2025年8月30日」，但因為 prompt 要求
+    「只回傳未來場次」，模型不會老實排除，而是直接把年份改成 2026 讓它「看起來」是未來。
+    這裡的規則：
+      1. 等於 today 的日期：高度可疑（很可能是把 prompt 裡的『今天日期』誤抄回來），丟棄。
+      2. 原文對同一個月/日有明確標示年份，且該年份跟 AI 給的不同 → 以原文年份為準（修正回去）。
+      3. AI 給的月/日在原文完全找不到任何蹤跡 → 視為幻覺，丟棄。
+    """
+    explicit = _extract_explicit_dates_from_text(raw_text)
+    year_by_md: dict[tuple, int] = {}
+    md_seen: set[tuple] = set()
+    for yr, mo, da in explicit:
+        md_seen.add((mo, da))
+        if yr is not None:
+            # 同一個月/日在原文出現多個不同年份時，保留先出現的那個
+            year_by_md.setdefault((mo, da), yr)
 
-    # 找出 best_url 對應的那一筆，優先使用
-    _primary = next((r for r in info_results if r["href"] == best_url), None)
-    if _primary:
-        combined_text = _primary.get("title", "") + " " + _primary.get("body", "")
-    else:
-        combined_text = " ".join(r.get("title", "") + " " + r.get("body", "") for r in info_results)
-    # 把原始推文加在最前面，讓 AI 優先參考（資訊最新最準確）
+    fixed = []
+    for d in ai_dates:
+        if d == today:
+            log.info(f"[售票搜尋] ⏭️  日期 {d} 等於今天，疑似AI誤把參考日期當內容，丟棄")
+            continue
+        try:
+            dt = _dt_validate.date.fromisoformat(d)
+        except ValueError:
+            continue
+        mo, da = dt.month, dt.day
+        real_year = year_by_md.get((mo, da))
+        if real_year is not None and real_year != dt.year:
+            corrected = f"{real_year:04d}-{mo:02d}-{da:02d}"
+            log.info(f"[售票搜尋] 🛠️  原文明確寫年份為 {real_year}，修正 AI 給的 {d} → {corrected}")
+            fixed.append(corrected)
+            continue
+        if (mo, da) not in md_seen:
+            log.info(f"[售票搜尋] ⏭️  日期 {d} 的月/日在原文找不到任何依據，疑似AI幻覺，丟棄")
+            continue
+        fixed.append(d)
+    return fixed
+
+
+def _stage2_search_news_dates(queries: list, artist_name: str, tweet_text: str, today: str) -> TicketSearchResult:
+    """
+    階段 2（只在階段 1 失敗時執行）：退而求其次，從新聞/搜尋結果裡找日期。
+    找到日期 → status=DATE_ONLY
+    完全沒有 → status=NOT_FOUND
+    """
+    from ddgs import DDGS
+
+    log.info("[售票搜尋] 未找到售票平台，嘗試從搜尋結果抓日期地點...")
+    _all_news_results = []
+    for query in queries[:2]:
+        try:
+            _nr = _searxng_search(query, max_results=8)
+            if not _nr:
+                try:
+                    with DDGS() as ddgs:
+                        _nr = list(ddgs.text(query, max_results=8))
+                except Exception:
+                    _nr = []
+            _all_news_results.extend(_nr)
+            time.sleep(3)
+        except Exception:
+            pass
+
+    if not _all_news_results:
+        return TicketSearchResult(status=TicketSearchStatus.NOT_FOUND)
+
+    _news_text = " ".join(r.get("title", "") + " " + r.get("body", "") for r in _all_news_results)
     if tweet_text:
-        if tweet_text:
-            combined_text = "[原始推文]\n" + tweet_text + "\n\n[搜尋結果]\n" + combined_text
+        _news_text = "[原始推文]\n" + tweet_text + "\n\n[搜尋結果]\n" + _news_text
+
+    _news_ai    = _extract_concert_info_with_ai(_news_text, artist_name, today)
+    _news_dates = _news_ai.get("dates") or []
+    _news_venue = _news_ai.get("venue")
+    _news_event = _news_ai.get("event_name")
+
+    if not _news_dates:
+        return TicketSearchResult(status=TicketSearchStatus.NOT_FOUND)
+
+    # ★ 場地驗證：新聞摘要常會混雜同一波亞洲巡演的其他國家場次，
+    #    AI 有時會誤抓成日本/韓國等地的場地。這裡沒有 ticket_url 可佐證，
+    #    信心本來就比較低，一旦場地是外國場地就直接視為無效，不要寫入。
+    if _is_foreign_venue(_news_venue):
+        log.info(f"[售票搜尋] ⏭️  從新聞找到的場地「{_news_venue}」疑似外國場地，捨棄")
+        return TicketSearchResult(status=TicketSearchStatus.NOT_FOUND)
+
+    # ★ 日期交叉校驗：用原文明確寫出的年份修正/剔除 AI 幻覺出的日期
+    #   （例如原文寫 2025年8月30日，AI 卻回傳 2026-08-30）
+    _news_dates = _validate_and_fix_ai_dates(_news_dates, _news_text, today)
+    if not _news_dates:
+        return TicketSearchResult(status=TicketSearchStatus.NOT_FOUND)
+
+    log.info(f"[售票搜尋] 📅 從新聞找到日期: {_news_dates}（無售票連結）")
+    return TicketSearchResult(
+        status=TicketSearchStatus.DATE_ONLY,
+        event_name=_news_event,
+        venue=_news_venue,
+        sessions=[{"date": d, "venue": _news_venue, "url": None} for d in _news_dates],
+    )
 
 
-
-    log.info(f"[售票搜尋] 合併文字({len(combined_text)}字): {combined_text[:500]}")
-
-    # ── 交給 AI 判斷日期和地點 ──────────────────────────────────────
-    ai_info = _extract_concert_info_with_ai(combined_text, artist_name, _today)
-    all_dates      = ai_info.get("dates") or []
-    venue          = ai_info.get("venue")
-    ai_event_name  = ai_info.get("event_name")
-    log.info(f"[售票搜尋] 📅 AI找到日期: {all_dates}")
-    log.info(f"[售票搜尋] 📍 AI找到地點: {venue}")
-    if ai_event_name:
-        log.info(f"[售票搜尋] 📌 AI找到活動名稱: {ai_event_name}")
-
-    # ── 活動名稱：優先清理 DDG title（最準確），AI 萃取的只做補充 ─
-    time.sleep(2)
-    clean = _clean_event_name_with_ai(event_name, artist_name)
-    if clean:
-        log.info(f"[售票搜尋] 📌 AI清理名稱: {clean}")
-        event_name = clean
-    elif ai_event_name:
-        event_name = ai_event_name
-        log.info(f"[售票搜尋] 📌 使用AI萃取名稱: {event_name}")
-
-    # ── fetch 頁面（kktix等非JS站才有用）找其他場次連結 ────────────
-    session_links = []
+def _stage3_fetch_ticket_page(best_url: str, artist_name: str, today: str, all_dates: list, venue):
+    """
+    階段 4：嘗試 fetch 售票頁面本身（非 JS 渲染時才有用），補充日期/地點/其他場次連結。
+    無論成不成功，都回傳 (all_dates, venue, session_links) —— 不會拋例外中斷主流程。
+    """
     import re as _re
     import urllib.parse as _up
+
+    session_links = []
     try:
         rp = requests.get(best_url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept-Language": "zh-TW,zh;q=0.9"
         }, timeout=12)
         if rp.status_code == 200:
-            html  = rp.text
+            html = rp.text
             is_js = "JavaScript enabled" in html or len(html.strip()) < 500
             if not is_js:
-                _base   = _up.urlparse(best_url)
+                _base = _up.urlparse(best_url)
                 _origin = f"{_base.scheme}://{_base.netloc}"
-                plain   = _re.sub(r"<[^>]+>", " ", html)
-                plain   = _re.sub(r"\s+", " ", plain)
-                # 已有日期時不再呼叫 AI（省時間），只在沒有日期或地點時才分析
+                plain = _re.sub(r"<[^>]+>", " ", html)
+                plain = _re.sub(r"\s+", " ", plain)
                 if not all_dates or not venue:
                     time.sleep(2)
-                    page_ai = _extract_concert_info_with_ai(plain, artist_name, _today)
+                    page_ai = _extract_concert_info_with_ai(plain, artist_name, today)
                     page_dates = page_ai.get("dates") or []
                     if page_dates and len(page_dates) > len(all_dates):
                         all_dates = page_dates
@@ -754,8 +1081,8 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
                         venue = page_ai["venue"]
                         log.info(f"[售票搜尋] 📍 頁面AI地點: {venue}")
                 else:
-                    log.info(f"[售票搜尋] 📅 已有日期地點，跳過頁面AI分析")
-                # 其他場次連結
+                    log.info("[售票搜尋] 📅 已有日期地點，跳過頁面AI分析")
+
                 for href in (_re.findall(r"href='([^']+)'", html) + _re.findall(r'href="([^"]+)"', html)):
                     if not href.startswith("http"):
                         href = _origin + href
@@ -770,69 +1097,225 @@ def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str =
     except Exception as e:
         log.warning(f"[售票搜尋] fetch 頁面失敗: {e}")
 
-    # ── 組合 sessions ───────────────────────────────────────────────
-    # 先用 session_links（從頁面抓的）對應日期
+    return all_dates, venue, session_links
+
+
+def _stage4_build_sessions(all_dates: list, venue, best_url: str, session_links: list) -> list:
+    """階段 5：組合出 sessions 清單（不做網路請求，純資料組裝）"""
     all_urls = [best_url] + session_links
-
-    sessions = []
     if not all_dates:
-        sessions = [{"date": None, "venue": venue, "url": best_url}]
-    elif len(all_dates) == 1:
-        sessions = [{"date": all_dates[0], "venue": venue, "url": best_url}]
-    else:
-        for i, d in enumerate(all_dates):
-            sessions.append({"date": d, "venue": venue,
-                             "url": all_urls[i] if i < len(all_urls) else best_url})
+        return [{"date": None, "venue": venue, "url": best_url}]
+    if len(all_dates) == 1:
+        return [{"date": all_dates[0], "venue": venue, "url": best_url}]
+    return [
+        {"date": d, "venue": venue, "url": all_urls[i] if i < len(all_urls) else best_url}
+        for i, d in enumerate(all_dates)
+    ]
 
-    # ── 多場次時，針對每個日期補搜尋獨立售票連結 ──────────────────
+
+def _stage5_supplement_session_links(sessions: list, best_url: str, event_name, artist_name: str) -> list:
+    """階段 6（僅多場次時執行）：針對每個日期補搜獨立售票連結"""
+    from ddgs import DDGS
+    import urllib.parse as _up
+    import datetime as _dt_s
+
+    log.info("[售票搜尋] 多場次，補搜尋各場次獨立售票連結...")
+    _base_netloc = _up.urlparse(best_url).netloc
+    _cur_yr = _dt_s.date.today().year
+
+    for i, session in enumerate(sessions):
+        d = session["date"]
+        if not d or session["url"] != best_url or i == 0:
+            continue
+        try:
+            _month_day = f"{int(d[5:7])}/{int(d[8:10])}"
+            _event_hint = event_name or artist_name
+            _search_q = f"{_event_hint} {_month_day} {_base_netloc.split('.')[0]}"
+            log.info(f"[售票搜尋] 補搜場次連結: {_search_q}")
+            _sr = _searxng_search(_search_q, max_results=8)
+            if not _sr:
+                try:
+                    with DDGS() as ddgs:
+                        _sr = list(ddgs.text(_search_q, max_results=8))
+                except Exception as e:
+                    log.warning(f"[售票搜尋] 補搜 ddgs 失敗: {e}")
+                    _sr = []
+            for r in _sr:
+                if _base_netloc in r["href"] and r["href"] != best_url:
+                    _rb = (r.get("title", "") + " " + r.get("body", ""))
+                    _old_years = [str(y) for y in range(2020, _cur_yr)]
+                    _has_old = any(yr in _rb for yr in _old_years)
+                    _has_new = str(_cur_yr) in _rb or str(_cur_yr + 1) in _rb
+                    if _has_old and not _has_new:
+                        log.info(f"[售票搜尋] ⚠️  跳過舊年份連結: {r['href']}")
+                        continue
+                    session["url"] = r["href"]
+                    log.info(f"[售票搜尋] 🔗 {d} 找到獨立連結: {r['href']}")
+                    break
+            time.sleep(1)
+        except Exception as e:
+            log.warning(f"[售票搜尋] 補搜場次連結失敗: {e}")
+
+    return sessions
+
+def _count_artist_hits(results, artist_name):
+    artist = artist_name.lower()
+
+    count = 0
+
+    for r in results:
+        text = (
+            r.get("title", "")
+            + " "
+            + r.get("body", "")
+        ).lower()
+
+        if artist in text:
+            count += 1
+
+    return count
+
+def _validate_ai_result(full_text, artist, dates, venue):
+    if not dates:
+        return False
+    pos = full_text.lower().find(artist.lower())
+    if pos == -1:
+        return False
+    window = full_text[max(0, pos-500):pos+500]
+    if venue and venue not in window:
+        return False
+    if not any(d in window for d in dates):
+        return False
+    return True
+
+def search_ticket_url(artist_name: str, artist_en: str = "", concert_date: str = None, tweet_text: str = "") -> dict:
+    """
+    整合 TicketFilter 權重機制的售票搜尋。
+
+    狀態機版本：內部拆成 6 個階段，每個階段回傳明確的成功/失敗結果，
+    不再讓「AI 沒抓到日期」這種失敗訊號被後面的程式碼默默忽略。
+    回傳 dict 裡多了一個 "status" 欄位（見 TicketSearchStatus），
+    呼叫端應該優先看 status，而不是只檢查 ticket_url 是否為 None。
+    """
+    try:
+        from ddgs import DDGS  # noqa: F401
+    except ImportError:
+        log.error("[售票搜尋] 找不到 ddgs 套件")
+        return TicketSearchResult(
+            status=TicketSearchStatus.SEARCH_ERROR, error="找不到 ddgs 套件"
+        ).to_dict()
+
+    import datetime as _dt
+    _yr = _dt.date.today().year
+    _today = _dt.date.today().isoformat()
+
+    ticket_filter = TicketFilter(target_years=[str(_yr), str(_yr + 1)], artist_name=artist_name)
+
+    _jp_hint = "日本" if artist_en else ""
+    queries = [
+        f"{_jp_hint}{artist_name} 台灣演唱會 {_yr} 售票",
+        f"{_jp_hint}{artist_name} 台灣演唱會 {_yr+1} 售票",
+        f"{artist_name} kktix OR ticketplus 台灣",
+    ]
+
+    best_url, raw_event_name, winning_results = _stage1_search_ticket_platform(
+        artist_name, queries, ticket_filter
+    )
+
+    if not best_url:
+        return _stage2_search_news_dates(queries, artist_name, tweet_text, _today).to_dict()
+
+    combined_text = " ".join(
+        r.get("title", "") + " " + r.get("body", "") for r in winning_results
+    )
+    if tweet_text:
+        combined_text = "[原始推文]\n" + tweet_text + "\n\n[搜尋結果]\n" + combined_text
+    log.info(f"[售票搜尋] 合併文字({len(combined_text)}字): {combined_text[:500]}")
+
+    ai_info = _extract_concert_info_with_ai(combined_text, artist_name, _today)
+    all_dates = ai_info.get("dates") or []
+    venue = ai_info.get("venue")
+    ai_event_name = ai_info.get("event_name")
+    # ----------------------------------------------------------
+    # 新聞 fallback 安全機制
+    # ----------------------------------------------------------
+
+    # 沒有售票網址時，不允許 AI 單獨建立演唱會
+    if not best_url:
+        if not all_dates:
+            log.info("[售票搜尋] 新聞未找到有效日期，放棄")
+            return None
+
+        if not venue:
+            log.info("[售票搜尋] 新聞未找到場地，放棄")
+            return None
+
+        if not event_name:
+            log.info("[售票搜尋] 新聞未找到活動名稱，放棄")
+            return None
+
+    if not best_url:
+        required = {
+            "date": bool(all_dates),
+            "venue": bool(venue),
+            "event": bool(event_name),
+        }
+
+        if not all(required.values()):
+            log.info(
+                "[售票搜尋] 新聞資訊不完整 %s，放棄",
+                required,
+            )
+            return None
+
+    if not best_url:
+        if not _validate_ai_result(
+            tweet_text,
+            artist_name,
+            all_dates,
+            venue,
+        ):
+            log.info("[售票搜尋] AI 驗證失敗")
+            return 
+    if not best_url:
+        if not _validate_news_result(ai_info, today):
+            log.info("[售票搜尋] AI 日期驗證失敗")
+            return None
+
+    log.info(f"[售票搜尋] 📅 AI找到日期: {all_dates}")
+    log.info(f"[售票搜尋] 📍 AI找到地點: {venue}")
+    if ai_event_name:
+        log.info(f"[售票搜尋] 📌 AI找到活動名稱: {ai_event_name}")
+
+    time.sleep(2)
+    event_name = raw_event_name
+    clean = _clean_event_name_with_ai(raw_event_name, artist_name)
+    if clean:
+        log.info(f"[售票搜尋] 📌 AI清理名稱: {clean}")
+        event_name = clean
+    elif ai_event_name:
+        event_name = ai_event_name
+        log.info(f"[售票搜尋] 📌 使用AI萃取名稱: {event_name}")
+
+    all_dates, venue, session_links = _stage3_fetch_ticket_page(
+        best_url, artist_name, _today, all_dates, venue
+    )
+
+    sessions = _stage4_build_sessions(all_dates, venue, best_url, session_links)
+
     if len(sessions) > 1:
-        log.info(f"[售票搜尋] 多場次，補搜尋各場次獨立售票連結...")
-        _base_netloc = _up.urlparse(best_url).netloc
-        for i, session in enumerate(sessions):
-            d = session["date"]
-            if not d:
-                continue
-            # 已有獨立 URL（不同於 best_url）就跳過
-            if session["url"] != best_url:
-                continue
-            if i == 0:
-                continue  # 第一場直接用 best_url，不需要補搜
-            try:
-                import datetime as _dt_s
-                _cur_yr = _dt_s.date.today().year
-                _month_day = f"{int(d[5:7])}/{int(d[8:10])}"
-                # 用活動名稱 + 日期搜尋，比只用歌手名更精確
-                _event_hint = event_name or artist_name
-                _search_q   = f"{_event_hint} {_month_day} {_base_netloc.split('.')[0]}"
-                log.info(f"[售票搜尋] 補搜場次連結: {_search_q}")
-                with DDGS() as ddgs:
-                    _sr = list(ddgs.text(_search_q, max_results=8))
-                for r in _sr:
-                    if _base_netloc in r["href"] and r["href"] != best_url:
-                        _rb = (r.get("title","") + " " + r.get("body",""))
-                        _old_years = [str(y) for y in range(2020, _cur_yr)]
-                        _has_old = any(yr in _rb for yr in _old_years)
-                        _has_new = str(_cur_yr) in _rb or str(_cur_yr+1) in _rb
-                        if _has_old and not _has_new:
-                            log.info(f"[售票搜尋] ⚠️  跳過舊年份連結: {r['href']}")
-                            continue
-                        sessions[i]["url"] = r["href"]
-                        log.info(f"[售票搜尋] 🔗 {d} 找到獨立連結: {r['href']}")
-                        break
-                time.sleep(1)
-            except Exception as e:
-                log.warning(f"[售票搜尋] 補搜場次連結失敗: {e}")
+        sessions = _stage5_supplement_session_links(sessions, best_url, event_name, artist_name)
 
     for s in sessions:
         log.info(f"[售票搜尋] 🎫 {s['date']} @ {s['venue']}  {s['url']}")
 
-    return {
-        "ticket_url": best_url,
-        "found_date": sessions[0]["date"] if sessions else None,
-        "event_name": event_name,
-        "venue":      venue,
-        "sessions":   sessions,
-    }
+    return TicketSearchResult(
+        status=TicketSearchStatus.TICKET_FOUND,
+        ticket_url=best_url,
+        event_name=event_name,
+        venue=venue,
+        sessions=sessions,
+    ).to_dict()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -915,6 +1398,31 @@ def _is_untrusted_source(url: str) -> bool:
     return any(d in u for d in UNTRUSTED_SOURCE_DOMAINS)
 
 
+# ★ 外國場地關鍵字（英文拼音 + 中文/日文譯名都要涵蓋，避免只比對羅馬拼音漏放行）
+_FOREIGN_VENUE_KEYWORDS = [
+    # 英文/拼音
+    "zepp tokyo", "zepp osaka", "zepp fukuoka", "zepp nagoya",
+    "kspo dome", "asiaworld-expo", "asiaworld",
+    "hong kong", "hongkong",
+    "singapore", "bangkok", "manila", "seoul",
+    "tokyo dome", "tokyo", "osaka", "fukuoka", "nagoya",
+    "kobe", "kyoto", "yokohama", "sapporo", "makuhari", "saitama",
+    "marine messe", "thailand", "philippines", "korea",
+    # 中文/日文譯名（新聞、搜尋摘要常用這種寫法，純英文關鍵字比對不到）
+    "大阪", "東京", "名古屋", "福岡", "神戶", "京都", "橫濱", "横浜",
+    "札幌", "埼玉", "幕張", "香港", "首爾", "首尔", "曼谷", "馬尼拉",
+    "新加坡", "釜山",
+]
+
+
+def _is_foreign_venue(venue: str | None) -> bool:
+    """判斷場地名稱是否屬於外國場地（同時比對英文拼音與中文/日文譯名）。"""
+    if not venue:
+        return False
+    v = venue.lower()
+    return any(kw.lower() in v for kw in _FOREIGN_VENUE_KEYWORDS)
+
+
 def _is_past_concert_date(date_str: str | None) -> bool:
     if not date_str:
         return False
@@ -946,8 +1454,15 @@ def _fetch_ddg_ticket_hints(artist_name: str, artist_en: str = "") -> list[dict]
     for sq in queries:
         try:
             log.info(f"[DDG] 售票平台補搜: {sq}")
-            with DDGS() as ddgs:
-                results = list(ddgs.text(sq, max_results=8))
+            # ★ 先試 SearXNG，失敗才退回 ddgs
+            results = _searxng_search(sq, max_results=8)
+            if not results:
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(sq, max_results=8))
+                except Exception as e:
+                    log.warning(f"[DDG] ddgs 補搜失敗: {e}")
+                    results = []
             for sr in results:
                 url = sr.get("href", "")
                 title = sr.get("title", "")
@@ -974,7 +1489,7 @@ def _fetch_ddg_ticket_hints(artist_name: str, artist_en: str = "") -> list[dict]
                     "source": "ddg_supplement",
                     "ticket_url": url,
                 })
-            time.sleep(1)
+            time.sleep(3)
         except Exception as e:
             log.warning(f"[DDG] 補搜失敗: {e}")
 
@@ -1388,6 +1903,11 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                     log.info(f"[{name}] ⏭️  跳過：演出日期已過 ({concert_date})")
                     continue
 
+                # ★ 新增：日期和場地都未定 → 資訊沒有實質內容，不管有沒有 URL 都跳過
+                if concert_date is None and concert_venue in (None, "未定"):
+                    log.info(f"[{name}] ⏭️  跳過：日期和場地都未定，資訊不足以顯示")
+                    continue
+
                 # 日期未定且沒有售票連結 → 資訊太不完整，跳過不寫入
                 if concert_date is None and not concert_url:
                     log.info(f"[{name}] ⏭️  跳過：日期未定且無售票連結，資訊不足")
@@ -1398,16 +1918,10 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                     log.info(f"[{name}] ⏭️  跳過：AI 信心不足且無售票/日期")
                     continue
 
-                # 日期合理性驗證：售票連結有效時，確認日期是台北場次（非其他城市）
-                # 無售票連結時（新聞找到的日期），直接信任 AI 已過濾的結果
-                if concert_date and final_ticket_url:
-                    # 有售票連結：驗證 venue 不是明顯的外國場地
-                    _foreign_venues = ["zepp tokyo", "zepp osaka", "zepp fukuoka",
-                                       "kspo dome", "asiaworld-expo", "hong kong",
-                                       "singapore", "bangkok", "manila", "seoul",
-                                       "tokyo dome", "osaka", "fukuoka", "sapporo"]
-                    _venue_lower = (concert_venue or "").lower()
-                    if any(fv in _venue_lower for fv in _foreign_venues):
+                # ★ 改進：日期合理性驗證 —— 不管有沒有售票連結都要檢查場地
+                #    （原本只在「有售票連結」時檢查，導致外國場地漏放行）
+                if concert_date:  # 只要有日期，就要驗證場地不是外國
+                    if _is_foreign_venue(concert_venue):
                         log.info(f"[{name}] ⏭️  跳過：場地 {concert_venue} 非台灣場次")
                         continue
 
@@ -1442,22 +1956,29 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
             artist_name=name,
             artist_en=artist.get("name_en", ""),
         )
+        status = ticket_info.get("status")
         ticket_url = ticket_info.get("ticket_url")
-        if ticket_url and any(d in ticket_url for d in TICKET_DOMAINS):
-            sessions = ticket_info.get("sessions") or []
-            if not sessions:
-                sessions = [{
-                    "date": ticket_info.get("found_date"),
-                    "venue": ticket_info.get("venue"),
-                    "url": ticket_url,
-                }]
+        sessions = ticket_info.get("sessions") or []
+
+        # ★ 用 status 明確分流，不再靠 ticket_url 是否為 None 反推發生了什麼事
+        if status == TicketSearchStatus.SEARCH_ERROR.value:
+            log.warning(f"[{name}] ⚠️  售票搜尋機制出錯（{ticket_info.get('error')}），跳過本次 fallback")
+        elif status not in (TicketSearchStatus.TICKET_FOUND.value, TicketSearchStatus.DATE_ONLY.value):
+            log.info(f"[{name}] ⏭️  DDG 直搜無結果，跳過")
+        else:
+            has_ticket = status == TicketSearchStatus.TICKET_FOUND.value
             for session in sessions:
                 _cd = session.get("date")
-                _cu = session.get("url") or ticket_url
+                _cu = session.get("url") or (ticket_url if has_ticket else None)
                 _cv = session.get("venue") or ticket_info.get("venue") or "未定"
                 if _is_past_concert_date(_cd):
                     continue
                 if not _cd and not _cu:
+                    continue
+                # ★ 這條 fallback 路徑之前完全沒做外國場地檢查，
+                #   導致「大阪城展演廳」這類日本場地被當成台灣場次寫入
+                if _is_foreign_venue(_cv):
+                    log.info(f"[{name}] ⏭️  跳過：場地 {_cv} 非台灣場次（DDG fallback）")
                     continue
                 concert = dict(
                     artist_id=art_id,
@@ -1465,13 +1986,13 @@ def monitor_artist(artist: dict, prefer: str = "nitter") -> list[dict]:
                     venue=_cv,
                     concert_date=_cd,
                     ticket_url=_cu,
-                    ticket_status="on_sale",
+                    ticket_status="on_sale" if _cu else "announced",
                     is_confirmed=1,
-                    ai_confidence=0.85,
-                    source_url=_cu,
-                    source_text="DDG 售票平台搜尋",
-                    source_platform="DDG Search",
-                    notes="售票平台直搜",
+                    ai_confidence=0.85 if _cu else 0.6,
+                    source_url=_cu or "",
+                    source_text="DDG 售票平台搜尋" if _cu else "新聞搜尋（尚無售票連結）",
+                    source_platform="DDG Search" if _cu else "新聞搜尋",
+                    notes="售票平台直搜" if _cu else "從新聞找到日期，尚無售票連結",
                 )
                 upsert_concert(**concert)
                 found.append(concert)

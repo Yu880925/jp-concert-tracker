@@ -27,6 +27,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: 啟動臨時 SearXNG（僅本次 job 使用，跟本機 Docker Desktop 無關）
+        run: |
+          mkdir -p searxng-config
+          cat > searxng-config/settings.yml << 'EOF'
+          use_default_settings: true
+          server:
+            secret_key: "${{ secrets.SEARXNG_SECRET_KEY }}"
+          search:
+            formats:
+              - html
+              - json
+          EOF
+          docker run -d --name searxng -p 8080:8080 \
+            -v ${{ github.workspace }}/searxng-config:/etc/searxng \
+            searxng/searxng:latest
+
+          echo "等待 SearXNG 啟動..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/ > /dev/null; then
+              echo "✓ SearXNG 已就緒"
+              break
+            fi
+            sleep 2
+          done
+
       - name: Wake Render & download database
         env:
           RENDER_URL: ${{ secrets.RENDER_URL }}
@@ -46,6 +71,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LOCAL_SEARXNG_URL: http://localhost:8080
         run: python monitor.py --prefer nitter
 
       - name: Backup database (artifact)

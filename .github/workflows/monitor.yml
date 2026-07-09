@@ -58,7 +58,8 @@ jobs:
           SCAN_API_KEY: ${{ secrets.SCAN_API_KEY }}
           DB_PATH: concerts.db
         run: python scripts/gha_sync.py download
-        continue-on-error: true
+        # ★ 不再用 continue-on-error: true —— 下載真的失敗時（非首次執行的404）
+        #   必須讓整個 job 停下來，否則後面會用空白資料庫覆蓋掉 Render 現有資料
 
       - name: Initialize database if missing
         env:

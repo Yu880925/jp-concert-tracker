@@ -78,7 +78,10 @@ def download():
             if i < MAX_RETRIES - 1:
                 time.sleep(RETRY_WAIT)
 
-    print("⚠️  下載失敗，將使用本機新建資料庫繼續")
+    print("❌ 下載失敗（非「尚無資料庫」的404，是真正的連線/伺服器錯誤）")
+    print("   → 為了避免用空白資料庫覆蓋 Render 現有資料，中止本次流程")
+    print("   → 不會繼續執行 monitor 掃描與上傳")
+    sys.exit(1)
 
 
 def upload():

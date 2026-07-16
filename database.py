@@ -62,6 +62,18 @@ def init_db():
         )
     """)
 
+    # ★ 封鎖清單：手動刪除某筆錯誤資料時，可以選擇順便記錄在這裡，
+    #   之後 upsert_concert 寫入前會檢查，避免同樣的錯誤資料被下次掃描重新寫回去
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_concerts (
+            artist_id     INTEGER NOT NULL,
+            concert_date  TEXT NOT NULL DEFAULT '',
+            venue         TEXT NOT NULL DEFAULT '',
+            blocked_at    TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (artist_id, concert_date, venue)
+        )
+    """)
+
     # Monitor log table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS monitor_log (
@@ -404,6 +416,17 @@ def upsert_concert(artist_id, event_name, venue, concert_date, **kwargs):
     conn = get_connection()
     cur = conn.cursor()
 
+    # ★ 檢查是否為手動封鎖過的錯誤資料，是的話直接跳過，不寫入
+    _block_key_date = concert_date or ""
+    _block_key_venue = venue or ""
+    cur.execute("""
+        SELECT 1 FROM blocked_concerts
+        WHERE artist_id = ? AND concert_date = ? AND venue = ?
+    """, (artist_id, _block_key_date, _block_key_venue))
+    if cur.fetchone():
+        conn.close()
+        return
+
     # 如果現在有明確日期，刪掉同歌手的「日期未定（NULL）」舊記錄
     if concert_date is not None:
         cur.execute("""
@@ -441,3 +464,62 @@ def upsert_concert(artist_id, event_name, venue, concert_date, **kwargs):
     ))
     conn.commit()
     conn.close()
+
+
+def delete_concert(concert_id: int, block: bool = True) -> bool:
+    """
+    刪除一筆演唱會資料。
+    block=True（預設）：同時記錄到 blocked_concerts，之後掃描抓到同樣的
+    (歌手, 日期, 場地) 組合會被自動跳過，不會被下次掃描重新寫回來。
+    block=False：只刪這一次，下次掃描如果又抓到同樣資訊，還是會再寫回來。
+    回傳 True 表示有刪到東西，False 表示找不到這筆 id。
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT artist_id, concert_date, venue FROM concerts WHERE id = ?", (concert_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False
+
+    if block:
+        cur.execute("""
+            INSERT INTO blocked_concerts (artist_id, concert_date, venue)
+            VALUES (?, ?, ?)
+            ON CONFLICT(artist_id, concert_date, venue) DO UPDATE SET
+                blocked_at = datetime('now')
+        """, (row["artist_id"], row["concert_date"] or "", row["venue"] or ""))
+
+    cur.execute("DELETE FROM concerts WHERE id = ?", (concert_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_blocked_concerts() -> list:
+    """列出目前所有封鎖中的 (歌手, 日期, 場地) 組合，給管理介面顯示/解除封鎖用。"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT b.artist_id, b.concert_date, b.venue, b.blocked_at, a.name as artist_name
+        FROM blocked_concerts b
+        JOIN artists a ON a.id = b.artist_id
+        ORDER BY b.blocked_at DESC
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def unblock_concert(artist_id: int, concert_date: str, venue: str) -> bool:
+    """解除封鎖，讓下次掃描重新抓到這個組合時可以再寫入（例如你發現其實封鎖錯了）。"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        DELETE FROM blocked_concerts
+        WHERE artist_id = ? AND concert_date = ? AND venue = ?
+    """, (artist_id, concert_date or "", venue or ""))
+    changed = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed

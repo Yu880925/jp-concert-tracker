@@ -20,6 +20,9 @@ from database import (
     get_all_artists,
     get_concerts_by_artists,
     get_artists_with_concert_status,
+    delete_concert,
+    get_blocked_concerts,
+    unblock_concert,
 )
 
 # ─── App Setup ─────────────────────────────────────────────────────────────────
@@ -88,6 +91,42 @@ def api_concerts():
             c["date_display"] = "日期未定"
             c["date_weekday"] = ""
     return jsonify(concerts)
+
+
+@app.route("/api/concerts/<int:concert_id>", methods=["DELETE"])
+@require_api_key
+def api_delete_concert(concert_id):
+    """
+    手動刪除一筆錯誤的演唱會資料。
+    預設同時加入封鎖清單，避免下次掃描又把同樣的錯誤資料寫回來。
+    傳 ?block=false 可以只刪這一次，不封鎖。
+    """
+    block = request.args.get("block", "true").lower() != "false"
+    ok = delete_concert(concert_id, block=block)
+    if not ok:
+        return jsonify({"error": f"找不到 id={concert_id} 的資料"}), 404
+    return jsonify({"status": "ok", "deleted_id": concert_id, "blocked": block})
+
+
+@app.route("/api/blocked-concerts", methods=["GET"])
+@require_api_key
+def api_list_blocked_concerts():
+    """列出目前所有封鎖中的資料，方便確認/管理。"""
+    return jsonify(get_blocked_concerts())
+
+
+@app.route("/api/blocked-concerts/unblock", methods=["POST"])
+@require_api_key
+def api_unblock_concert():
+    """解除封鎖：傳入 artist_id, concert_date, venue（JSON body）。"""
+    data = request.get_json(silent=True) or {}
+    artist_id = data.get("artist_id")
+    concert_date = data.get("concert_date", "")
+    venue = data.get("venue", "")
+    if artist_id is None:
+        return jsonify({"error": "缺少 artist_id"}), 400
+    ok = unblock_concert(int(artist_id), concert_date, venue)
+    return jsonify({"status": "ok" if ok else "not_found"})
 
 
 @app.route("/api/config")

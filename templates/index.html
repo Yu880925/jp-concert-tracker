@@ -507,6 +507,24 @@ body::after {
 }
 .confirm-badge.yes { color: var(--teal); border-color: rgba(0,212,170,0.3); }
 
+.report-wrong-btn {
+  font-size: 10px;
+  font-family: 'Space Mono', monospace;
+  color: var(--text3);
+  background: none;
+  padding: 3px 9px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  letter-spacing: 0.5px;
+}
+.report-wrong-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 56, 96, 0.08);
+}
+
 .card-body {
   padding: 16px 24px;
   display: grid;
@@ -904,6 +922,9 @@ function renderCard(c, idx) {
         <span class="confirm-badge ${c.is_confirmed ? 'yes' : ''}">
           ${c.is_confirmed_label}
         </span>
+        <button class="report-wrong-btn" onclick="deleteConcert(${c.id}, event)">
+          🗑 資訊有誤
+        </button>
       </div>
     </div>
 
@@ -984,6 +1005,44 @@ function showToast(msg, type='success') {
   t.textContent = msg;
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+/* ─── Admin: 刪除錯誤資料 ────────────────────────────── */
+function getApiKey() {
+  let key = localStorage.getItem('scan_api_key');
+  if (!key) {
+    key = prompt('請輸入管理用的 API Key（跟 GitHub Secrets / Render 環境變數裡設定的 SCAN_API_KEY 相同）：');
+    if (key) localStorage.setItem('scan_api_key', key);
+  }
+  return key;
+}
+
+async function deleteConcert(concertId, evt) {
+  if (evt) evt.stopPropagation();
+  if (!confirm('確定這筆資訊有誤要刪除嗎？\n刪除後同樣的錯誤資訊之後也不會再被自動抓進來。')) return;
+
+  const key = getApiKey();
+  if (!key) return;
+
+  try {
+    const res = await fetch(`/api/concerts/${concertId}`, {
+      method: 'DELETE',
+      headers: { 'X-API-Key': key }
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast('已刪除該筆資訊', 'success');
+      loadConcerts();
+      loadStats();
+    } else if (res.status === 401) {
+      showToast('API Key 錯誤，請重新輸入', 'info');
+      localStorage.removeItem('scan_api_key');
+    } else {
+      showToast('刪除失敗：' + (data.error || res.status), 'info');
+    }
+  } catch (e) {
+    showToast('連線錯誤：' + e.message, 'info');
+  }
 }
 
 /* ─── Util ───────────────────────────────────────────── */
